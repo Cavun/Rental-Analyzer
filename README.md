@@ -71,10 +71,11 @@ build log says `Hidden import 'soupsieve' not found`, that is the symptom.
 - **Every run** (including pull requests) attaches `RentalAnalyzer.exe` to
   the workflow run as an artifact, kept for 90 days — Actions tab → the run
   → *Artifacts*.
-- **Merges into `main`** additionally publish a GitHub Release tagged
-  `build-<run number>`, marked as the latest release, holding
-  `RentalAnalyzer.exe`. That is the link to hand someone who just wants the
-  app.
+- **Merges into `main`** used to additionally publish a GitHub Release
+  tagged `build-<run number>`, holding `RentalAnalyzer.exe`. That job is
+  **temporarily switched off** (`if: false` on the `release` job); it is
+  still there in full, so turning it back on is a one-line change. While it
+  is off, the artifact above is how you get a build of a merge.
 
 You can also trigger it by hand from the Actions tab (*Run workflow*). Only
 Windows is built; macOS and Linux users run from source with the commands
@@ -332,7 +333,7 @@ listing cleared the screen; a listing that misses thresholds reads FAIL, never
 | `gui.py` | Tkinter desktop app over the same pipeline — editable fields, live report, comparison table, CSV/JSON export. |
 | `main.py` | CLI wiring: extract → enrich → finance → report → sensitivity. `--gui` launches the desktop app. |
 | `rental_analyzer.spec` | PyInstaller recipe for a standalone double-clickable build. Preflights the parser, bundles bs4 via `collect_all`, and uses onedir on macOS / onefile elsewhere. |
-| `.github/workflows/build.yml` | CI: tests every push and pull request, then packages the app on a Windows runner. Merges into `main` publish a GitHub Release holding `RentalAnalyzer.exe`. |
+| `.github/workflows/build.yml` | CI: tests every push and pull request, then packages the app on a Windows runner. The release-publishing job is present but temporarily disabled. |
 | `.github/scripts/check_bundle.py` | Post-build guard. Reads the finished `.exe`'s table of contents and fails the build if `tkinter`, `bs4` or `soupsieve` silently did not get bundled. |
 | `sample_listing.py` | A realistic fabricated flexmls page so `python3 main.py` runs with no setup. |
 | `tests/` | `python3 -m unittest discover tests` — 160 tests over loan math, the IRR solver, the required rent and tax inputs, year-1 pessimism, end-of-year appreciation, both exits, the after-tax layer, grid isolation, and the GUI (widget tests skip automatically on a headless box). |
