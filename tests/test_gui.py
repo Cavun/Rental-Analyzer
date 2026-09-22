@@ -313,24 +313,19 @@ class TestThresholdsAreAllExposed(GUITestCase):
         checks = screen(self.app.result, self.app.thresholds_from_fields())
         self.assertEqual(checks["Breakeven Occupancy"], "FAIL")
 
-    def test_wiggle_box_drives_the_band(self):
-        from report import cash_flow_gap
+    def test_a_year_one_only_miss_reaches_the_banner_and_the_report(self):
+        from report import PASS_LATER, screen
         self.load_and_fill()
-        gap = cash_flow_gap(self.app.result, self.app.thresholds_from_fields())
-        self.assertTrue(gap.close)
-        self.app.f_cf_wiggle.var.set("0")
-        gap = cash_flow_gap(self.app.result, self.app.thresholds_from_fields())
-        self.assertEqual(gap.band, 0.0)
-        self.assertFalse(gap.close)
-
-    def test_a_close_miss_reaches_the_banner_and_the_report(self):
-        self.load_and_fill()
-        self.assertIn("CLOSE on cash flow", self.app.verdict_label.cget("text"))
-        self.assertIn("wiggle room", self.app.txt_report.get("1.0", "end"))
+        checks = screen(self.app.result, self.app.thresholds_from_fields())
+        self.assertEqual(checks["Monthly Cash Flow"], PASS_LATER)
+        self.assertIn("clearing from year 2", self.app.verdict_label.cget("text"))
+        self.assertIn("YEAR 1 ONLY", self.app.txt_report.get("1.0", "end"))
 
     def test_cash_flow_box_changes_the_screen(self):
         from report import screen
         self.load_and_fill()
+        # A bar no year of the hold clears is a plain miss, asterisk or not.
+        self.app.f_min_cf.var.set("900")
         checks = screen(self.app.result, self.app.thresholds_from_fields())
         self.assertEqual(checks["Monthly Cash Flow"], "FAIL")
         # A landlord willing to feed the deal $300/mo through year 1.

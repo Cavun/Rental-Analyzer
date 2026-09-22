@@ -50,7 +50,7 @@ from financial_engine import (
 from report import (
     BATCH_HEADERS,
     Thresholds,
-    cash_flow_gap,
+    cash_flow_clears_later,
     format_after_tax,
     format_report,
     money,
@@ -482,13 +482,6 @@ class RentalAnalyzerGUI(ttk.Frame):
                     "ticking it double-counts one failure. The honest use is as a "
                     "STRESS test -- 85% with a 1-month vacancy assumption means 'must "
                     "still cash flow if vacancy doubles'.")
-        self.f_cf_wiggle = LabeledEntry(
-            thr, 3, 1, "CF wiggle room", suffix="%",
-            tooltip="Wiggle room on the monthly cash-flow test only. A deal that "
-                    "misses the cash-flow bar by less than this still fails, but the "
-                    "report says CLOSE and lists the rent, price and expense moves "
-                    "that would close the gap. Measured against the bar; when the bar "
-                    "is $0 it falls back to this share of gross rent. 0 turns it off.")
 
         self.reset_fields(keep_listing=False)
 
@@ -760,7 +753,6 @@ class RentalAnalyzerGUI(ttk.Frame):
             screen_cash_on_cash=self.f_min_coc.is_on(),
             screen_irr=self.f_min_irr.is_on(),
             screen_monthly_cash_flow=self.f_min_cf.is_on(),
-            cash_flow_wiggle_pct=(self.f_cf_wiggle.get(10.0) or 0.0) / 100,
             # These two are screened only when ticked AND filled in: for them
             # the value carries the switch downstream (see report.Thresholds),
             # so an unticked box has to arrive as None.
@@ -844,15 +836,22 @@ class RentalAnalyzerGUI(ttk.Frame):
     def _update_banner(self, result: UnderwritingResult, thresholds: Thresholds) -> None:
         checks = screen(result, thresholds, self.after_tax)
         text = verdict(checks)
-        # A cash-flow miss inside the wiggle room says so on the headline: the
-        # difference between "short $40/mo" and "short $400/mo" is the whole
-        # question of whether the deal is worth reworking.
-        gap = cash_flow_gap(result, thresholds)
-        if gap is not None and gap.close:
-            text += (f"  CLOSE on cash flow: {money(gap.short_by)}/mo short of "
-                     f"{money(gap.threshold)}/mo -- see the report for what closes it.")
-        color = OK_COLOR if text.startswith("PASS") else (
-            WARN_COLOR if text.startswith(("MARGINAL", "NOT SCREENED")) else BAD_COLOR)
+        # The asterisk belongs on the headline: a deal whose only miss is
+        # year 1 needs cash in the bank, not a different price.
+        later = (cash_flow_clears_later(result, thresholds)
+                 if thresholds.screen_monthly_cash_flow else None)
+        if later is not None:
+            text += (f"  * cash flow {money(later.year1_monthly)}/mo in year 1, clearing "
+                     f"from year {later.first_clear_year} "
+                     f"({money(later.first_clear_monthly)}/mo); "
+                     f"{money(later.year1_out_of_pocket)} out of pocket to carry it.")
+        # A year-1-only miss is a pass, but not a green one: it is a pass that
+        # needs cash in the bank, so it reads like the caution it is.
+        color = BAD_COLOR
+        if text.startswith("PASS"):
+            color = WARN_COLOR if later is not None else OK_COLOR
+        elif text.startswith(("MARGINAL", "NOT SCREENED")):
+            color = WARN_COLOR
         self.verdict_label.configure(text=text, foreground=color)
         chips = "Year 1 (incl. lease-up):   " + "   ".join([
             f"Cap {result.cap_rate * 100:5.2f}%",
@@ -1052,7 +1051,7 @@ class RentalAnalyzerGUI(ttk.Frame):
             self.f_magi: "",
             self.f_min_dscr: "1.25", self.f_min_cap: "5.0", self.f_min_coc: "8.0",
             self.f_min_irr: "10.0", self.f_min_cf: "0", self.f_min_at_irr: "6.0",
-            self.f_max_be_occ: "85", self.f_cf_wiggle: "10",
+            self.f_max_be_occ: "85",
         }
         for widget, value in defaults.items():
             widget.var.set(value)

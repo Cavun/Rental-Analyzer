@@ -33,15 +33,14 @@ from financial_engine import (  # noqa: E402
     project,
     underwrite,
 )
-from report import (OFF, Thresholds, cash_flow_gap, cash_flow_gap_report,  # noqa: E402
-                    format_report, one_line_summary, render_table, screen, verdict)
+from report import (OFF, PASS_LATER, Thresholds,  # noqa: E402
+                    cash_flow_asterisk_note, cash_flow_clears_later, format_report,
+                    one_line_summary, render_table, screen, verdict)
 from sample_listing import SAMPLE_LISTING_HTML  # noqa: E402
 from sensitivity import (  # noqa: E402
     RENT_LEVEL_DELTAS,
     breakeven_rent,
     interest_rate_grid,
-    price_for_cash_flow,
-    rent_for_cash_flow,
     rent_growth_vs_vacancy,
     rent_level_grid,
 )
@@ -745,93 +744,79 @@ class TestThresholdSwitches(unittest.TestCase):
         self.assertEqual(one_line_summary(self.result, t)[-1], OFF)
 
 
-class TestCashFlowWiggleRoom(unittest.TestCase):
-    """Near misses on cash flow read CLOSE, with the levers that close them."""
+class TestYearOneOnlyCashFlowMiss(unittest.TestCase):
+    """A miss year 1 owns alone passes with an asterisk, not a FAIL."""
 
     def setUp(self):
-        # Year-1 cash flow lands a little under $0 on this one: a near miss,
-        # which is exactly what wiggle room exists to describe.
+        # Lease-up drags year 1 under $0; every later year clears.
         self.result = underwrite(make_inputs(purchase_price=239900, monthly_rent=2400,
                                              expenses=OperatingExpenses(
                                                  property_tax_annual=5245,
                                                  insurance_annual=1655)))
         self.assertLess(self.result.monthly_cash_flow, 0)
-        # ... but by less than the 10% band, so it reads CLOSE.
-        self.assertGreater(self.result.monthly_cash_flow,
-                           -0.10 * self.result.inputs.monthly_rent)
+        self.assertGreater(self.result.years[1].cash_flow, 0)
 
-    def test_no_gap_when_the_deal_clears_the_bar(self):
-        t = Thresholds(min_monthly_cash_flow=self.result.monthly_cash_flow - 1)
-        self.assertIsNone(cash_flow_gap(self.result, t))
-        self.assertEqual(cash_flow_gap_report(self.result, t), [])
+    def test_screen_marks_it_rather_than_failing_it(self):
+        self.assertEqual(screen(self.result, Thresholds())["Monthly Cash Flow"],
+                         PASS_LATER)
 
-    def test_no_gap_when_the_cash_flow_test_is_switched_off(self):
-        self.assertIsNone(cash_flow_gap(self.result,
-                                        Thresholds(screen_monthly_cash_flow=False)))
+    def test_it_does_not_count_as_a_missed_threshold(self):
+        t = Thresholds(screen_cash_on_cash=False)
+        self.assertTrue(verdict(screen(self.result, t)).startswith("PASS"))
+        self.assertIn("year 2", verdict(screen(self.result, t)))
 
-    def test_band_falls_back_to_rent_when_the_bar_is_zero(self):
-        """10% of a $0 bar is $0, which would make every miss a far miss."""
-        gap = cash_flow_gap(self.result, Thresholds())
-        self.assertAlmostEqual(gap.band, self.result.inputs.monthly_rent * 0.10)
-        self.assertAlmostEqual(gap.short_by, -self.result.monthly_cash_flow)
-        self.assertTrue(gap.close)
+    def test_the_note_names_the_year_it_clears_and_the_cash_to_carry_it(self):
+        later = cash_flow_clears_later(self.result, Thresholds())
+        self.assertEqual(later.first_clear_year, 2)
+        self.assertGreater(later.first_clear_monthly, 0)
+        self.assertAlmostEqual(later.year1_out_of_pocket,
+                               -self.result.year1_cash_flow, places=6)
+        text = "\n".join(cash_flow_asterisk_note(self.result, Thresholds()))
+        self.assertIn("YEAR 1 ONLY", text)
+        self.assertIn("out of pocket", text)
 
-    def test_band_is_a_share_of_a_non_zero_bar(self):
-        gap = cash_flow_gap(self.result, Thresholds(min_monthly_cash_flow=300))
-        self.assertAlmostEqual(gap.band, 30.0)
-        self.assertFalse(gap.close)
+    def test_the_note_reaches_the_report(self):
+        text = format_report(self.result, None, Thresholds(), projection_years=0)
+        self.assertIn(PASS_LATER, text)
+        self.assertIn("YEAR 1 ONLY", text)
 
-    def test_a_miss_past_the_band_is_not_close(self):
+    def test_the_batch_row_carries_the_asterisk(self):
+        row = one_line_summary(self.result, Thresholds(screen_cash_on_cash=False))
+        self.assertEqual(row[-1], PASS_LATER)
+
+    def test_a_deal_that_never_clears_still_fails(self):
+        """The asterisk is for timing. A deal priced wrong does not get one."""
         result = underwrite(PropertyInputs(
             purchase_price=400000, monthly_rent=1500,
             expenses=OperatingExpenses(property_tax_annual=8000, insurance_annual=2000),
         ))
-        gap = cash_flow_gap(result, Thresholds())
-        self.assertFalse(gap.close)
-        text = "\n".join(cash_flow_gap_report(result, Thresholds()))
-        self.assertIn("not a near miss", text)
-        self.assertNotIn("CLOSE", text)
+        self.assertIsNone(cash_flow_clears_later(result, Thresholds()))
+        self.assertEqual(screen(result, Thresholds())["Monthly Cash Flow"], "FAIL")
+        self.assertEqual(cash_flow_asterisk_note(result, Thresholds()), [])
 
-    def test_zero_wiggle_room_turns_the_band_off(self):
-        gap = cash_flow_gap(self.result, Thresholds(cash_flow_wiggle_pct=0.0))
-        self.assertEqual(gap.band, 0.0)
-        self.assertFalse(gap.close)
+    def test_a_later_dip_back_under_the_bar_forfeits_the_asterisk(self):
+        """Every year after the first must clear, not just the next one."""
+        # Expenses outrun rent, so the deal clears year 2 and then crosses
+        # back under mid-hold.
+        result = underwrite(make_inputs(purchase_price=239900, monthly_rent=2500,
+                                        rent_growth=0.01, expense_growth=0.05,
+                                        expenses=OperatingExpenses(
+                                            property_tax_annual=5245,
+                                            insurance_annual=1655)))
+        self.assertLess(result.monthly_cash_flow, 0)
+        self.assertGreater(result.years[1].cash_flow, 0)
+        self.assertLess(result.years[-1].cash_flow, 0)
+        self.assertIsNone(cash_flow_clears_later(result, Thresholds()))
 
-    def test_close_report_names_the_gap_and_the_levers(self):
-        text = "\n".join(cash_flow_gap_report(self.result, Thresholds()))
-        self.assertIn("CLOSE", text)
-        for lever in ("rent", "price", "operating expenses"):
-            self.assertIn(lever, text)
+    def test_it_is_measured_against_your_bar_not_against_zero(self):
+        """A positive bar year 2 cannot clear is a plain miss, not an asterisk."""
+        t = Thresholds(min_monthly_cash_flow=500)
+        self.assertIsNone(cash_flow_clears_later(self.result, t))
+        self.assertEqual(screen(self.result, t)["Monthly Cash Flow"], "FAIL")
 
-    def test_a_close_deal_still_fails_the_screen(self):
-        """Wiggle room explains a miss. It never forgives one."""
-        checks = screen(self.result, Thresholds())
-        self.assertEqual(checks["Monthly Cash Flow"], "FAIL")
-
-    def test_the_levers_actually_close_the_gap(self):
-        """Each lever is solved against the real engine, not estimated."""
-        inputs = self.result.inputs
-        rent = rent_for_cash_flow(inputs, 0.0)
-        self.assertGreaterEqual(
-            underwrite(inputs.copy_with(monthly_rent=rent + 1)).monthly_cash_flow, 0)
-        price = price_for_cash_flow(inputs, 0.0)
-        self.assertLess(price, inputs.purchase_price)
-        self.assertGreaterEqual(
-            underwrite(inputs.copy_with(purchase_price=price - 1)).monthly_cash_flow, 0)
-
-    def test_price_is_not_a_lever_when_operations_alone_miss(self):
-        """A free house that still bleeds cash gets told so, not a fake number."""
-        hopeless = PropertyInputs(
-            purchase_price=100000, monthly_rent=500,
-            expenses=OperatingExpenses(property_tax_annual=12000, insurance_annual=4000),
-        )
-        self.assertIsNone(price_for_cash_flow(hopeless, 0.0))
-        text = "\n".join(cash_flow_gap_report(underwrite(hopeless), Thresholds()))
-        self.assertIn("no offer fixes this one", text)
-
-    def test_wiggle_note_reaches_the_report(self):
-        text = format_report(self.result, None, Thresholds(), projection_years=0)
-        self.assertIn("wiggle room", text)
+    def test_no_note_when_the_cash_flow_test_is_switched_off(self):
+        t = Thresholds(screen_monthly_cash_flow=False)
+        self.assertEqual(cash_flow_asterisk_note(self.result, t), [])
 
 
 class TestPackagingFallbacks(unittest.TestCase):

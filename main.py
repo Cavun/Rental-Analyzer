@@ -140,8 +140,6 @@ def thresholds_from_args(args: argparse.Namespace) -> Thresholds:
         t.min_irr = args.min_irr
     if args.min_cf is not None:
         t.min_monthly_cash_flow = args.min_cf
-    if args.wiggle is not None:
-        t.cash_flow_wiggle_pct = args.wiggle
     # --screen replaces the default set outright rather than adding to it:
     # "screen on exactly these" is the only reading that lets you turn the
     # two defaults OFF from the command line.
@@ -248,7 +246,9 @@ def print_batch(blobs: List[Tuple[str, str]], args: argparse.Namespace) -> None:
     print()
     print(render_table(BATCH_HEADERS, rows, title=f"BATCH SCREEN -- {len(rows)} listing(s)"))
     print()
-    print("  Screen column: PASS = clears every threshold; FAIL xN = N thresholds missed.")
+    print("  Screen column: PASS = clears every threshold it is screened on; "
+          "PASS* = clears,\n  but cash flow only from year 2; FAIL xN = N thresholds "
+          "missed; off = nothing screened.")
     print("  Re-run a single listing without other files for the full report.")
     if failures:
         print()
@@ -331,11 +331,6 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Screen on exactly these metrics and no others: "
                         + ", ".join(sorted(SCREEN_SWITCHES))
                         + ". Default is coc and cf; the rest are reported, not screened.")
-    s.add_argument("--wiggle", type=float, metavar="SHARE",
-                   help="Wiggle room on the cash-flow test as a decimal share of the "
-                        "bar (default 0.10). A miss inside it reads CLOSE, with the "
-                        "rent, price and expense moves that would close the gap. "
-                        "0 turns it off.")
     return p
 
 

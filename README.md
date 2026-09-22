@@ -257,43 +257,40 @@ use it as a genuine stress test, set `Thresholds.max_breakeven_occupancy`
 *tighter* than your assumed occupancy (e.g. 0.85 with a 1-month vacancy
 assumption: "does this still work if vacancy doubles?").
 
-### Wiggle room on cash flow
+### The cash-flow asterisk
 
-A cash-flow miss of $40/mo and a miss of $400/mo are different problems, and a
-bare FAIL does not tell them apart. `Thresholds.cash_flow_wiggle_pct`
-(default 10%, the **CF wiggle room** box in the GUI, `--wiggle` on the CLI)
-sets a band below the cash-flow bar. A deal that lands inside it still FAILS
-the screen — wiggle room explains a miss, it never forgives one — but the
-report says so in words:
+Year 1 carries the lease-up months and the first-year repair bump, and neither
+comes back. A deal that misses the cash-flow bar in year 1 and clears it every
+year after is a timing problem, not a pricing one, so it reads **PASS\*** on
+the screen rather than FAIL:
 
 ```
-  CLOSE -- but not quite. Monthly cash flow -$172 is $172/mo under your $0/mo
-  bar, inside the $240/mo wiggle room (10% of the $2,400/mo rent, since the
-  threshold itself is $0).
-  Any ONE of these closes the $172/mo gap:
-    - rent $2,400 -> $2,646/mo (+$246, +10.2%) -- and only if a comp supports it
-    - price $239,900 -> $207,588 (-$32,312, -13.5%)
-    - operating expenses -$2,062/yr ($172/mo) -- insurance shopped,
-      management self-done, a tax appeal
+Monthly cash flow        -$172      >= $0   PASS*
+
+  * Monthly cash flow misses in YEAR 1 ONLY: -$172/mo against a $0/mo bar,
+  lease-up included. It clears from year 2 ($44/mo) and stays clear for the
+  rest of the hold, so the miss is timing, not pricing. It still costs you
+  $2,062 out of pocket across the first twelve months -- money you need in the
+  bank before you close, not money the deal lends you.
 ```
 
-Each lever is the FULL move on its own — they are alternatives, not a plan to
-do all three — and each is solved against the real engine by bisection
-(`sensitivity.rent_for_cash_flow`, `sensitivity.price_for_cash_flow`), not
-estimated from a derivative. When the operating numbers miss the bar even at
-a purchase price of zero, the price line says so instead of printing a
-nonsense offer.
+The asterisk is strict on both halves. **Every** later year of the hold must
+clear the bar, not just year 2: a deal that dips back under mid-hold (expenses
+outrunning rent) gets a plain FAIL, because calling that lease-up would be
+flattering it. And it is measured against *your* bar, not against $0 — set the
+bar at $500/mo and a year 2 that makes $44/mo is simply a miss.
 
-The percentage needs something to bite on: it is measured against the bar,
-and because the bar is usually $0 (where a percentage of it is also $0) it
-falls back to the same percentage of month-1 gross rent. A miss past the band
-prints the same levers under a blunter headline. Set the percentage to 0 to
-turn the whole thing off and get a flat FAIL back.
+A PASS\* is not a clean pass. It says the price is defensible and you need
+cash in the bank, so the out-of-pocket figure travels with it everywhere: the
+report footnote, the GUI banner (in caution yellow, not green) and the `PASS*`
+cell in the comparison table.
 
-Verdicts: **PASS** (clears every threshold — worth a closer look) ·
-**MARGINAL** (one or two misses, DSCR intact) · **FAIL** (anything worse, or
-any DSCR miss). PASS means the listing cleared the screen; a listing that
-misses thresholds reads FAIL, never "pass".
+Verdicts: **PASS** (clears every threshold it is screened on — worth a closer
+look) · **MARGINAL** (one or two misses, DSCR intact) · **FAIL** (anything
+worse, or any DSCR miss) · **NOT SCREENED** (every switch off). A PASS that
+rests on the cash-flow asterisk says so on the verdict line. PASS means the
+listing cleared the screen; a listing that misses thresholds reads FAIL, never
+"pass".
 
 ## Layout
 
