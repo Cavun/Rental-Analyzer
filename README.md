@@ -9,10 +9,42 @@ arithmetic. One dependency: `beautifulsoup4`.
 
 ```bash
 pip install -r requirements.txt
-python3 main.py                      # runs the built-in sample listing
+python3 gui.py                       # desktop app (recommended)
+python3 main.py                      # command line, built-in sample listing
 ```
 
-## Using it on a real listing
+## The GUI
+
+`python3 gui.py` (or `python3 main.py --gui`) opens a desktop window: load a
+listing, every extracted field lands in an editable box, adjust any
+assumption, and the report, projection and sensitivity grids update on
+**Underwrite** (or just press Enter in any box).
+
+- **Nothing is locked.** Every parsed field is editable, so you can correct a
+  bad parse, underwrite your offer instead of the asking price, or type a
+  deal in by hand with no listing at all.
+- **The tax box says where its number came from** — *estimated from listing*
+  in amber, or **VERIFIED (your figure)** in green once you type over it.
+  There is a button that opens the state estimator right next to it.
+- **Comparison tab** stacks deals as you screen them, one row each, colored
+  by PASS/FLAG. Export it to CSV.
+- **Export** the full report as text or JSON.
+
+Tkinter ships with Python, so there is nothing extra to install on Windows or
+with a python.org build. On Debian/Ubuntu: `sudo apt install python3-tk`.
+
+### Building a double-clickable app
+
+```bash
+pip install pyinstaller
+pyinstaller rental_analyzer.spec
+```
+
+`dist/` then holds `RentalAnalyzer.exe` (Windows), `RentalAnalyzer.app`
+(macOS) or a standalone binary (Linux) — no Python needed on the machine
+that runs it.
+
+## Using it from the command line
 
 flexmls disallows automated access in robots.txt, and the consumer portals
 prohibit scraping in their terms. So this tool never fetches anything. You
@@ -126,9 +158,11 @@ two misses, DSCR intact) · **PASS ON IT**.
 | `financial_engine.py` | All arithmetic. `PropertyInputs` → year-by-year projection, cap rate, CoC, DSCR, breakeven occupancy, IRR via self-contained Newton-Raphson (bisection fallback). No numpy. |
 | `sensitivity.py` | Grids: rent growth × vacancy, interest rate, rent level. Deep-copies the base inputs per run. |
 | `report.py` | Text report with PASS/FLAG markers and a fixed-width table renderer. |
-| `main.py` | CLI wiring: extract → enrich → finance → report → sensitivity. |
+| `gui.py` | Tkinter desktop app over the same pipeline — editable fields, live report, comparison table, CSV/JSON export. |
+| `main.py` | CLI wiring: extract → enrich → finance → report → sensitivity. `--gui` launches the desktop app. |
+| `rental_analyzer.spec` | PyInstaller recipe for a standalone double-clickable build. |
 | `sample_listing.py` | A realistic fabricated flexmls page so `python3 main.py` runs with no setup. |
-| `tests/` | `python3 -m unittest discover tests` — 36 tests over loan math, IRR, the tax input and correction, and grid isolation. |
+| `tests/` | `python3 -m unittest discover tests` — 44 tests over loan math, IRR, the tax input and correction, grid isolation, and the GUI (widget tests skip automatically on a headless box). |
 
 ## Extending it
 

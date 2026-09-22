@@ -1,2 +1,9 @@
 # Only runtime dependency. No API keys, no environment variables, no network calls.
 beautifulsoup4>=4.12
+
+# The GUI (gui.py) uses tkinter, which ships with Python itself -- nothing to
+# install on Windows or with a python.org build. On Debian/Ubuntu:
+#     sudo apt install python3-tk
+#
+# Build-time only, for packaging the GUI into a standalone app:
+#     pip install pyinstaller && pyinstaller rental_analyzer.spec

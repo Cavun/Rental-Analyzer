@@ -215,6 +215,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Listing HTML file(s), or '-' for stdin. Omit to run the built-in sample.")
     p.add_argument("--paste", action="store_true",
                    help="Paste listing HTML or text interactively, then Ctrl-D.")
+    p.add_argument("--gui", action="store_true", help="Launch the desktop GUI instead of the CLI.")
     p.add_argument("--json", action="store_true", help="Emit machine-readable JSON instead of a report.")
     p.add_argument("--no-sensitivity", action="store_true", help="Skip the sensitivity grids.")
     p.add_argument("--show-years", type=int, default=10, help="Projection years to print (default 10).")
@@ -247,6 +248,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.gui:
+        try:
+            from gui import main as gui_main
+        except ImportError as exc:  # tkinter missing from this Python build
+            print(f"Could not start the GUI: {exc}\n"
+                  "Tkinter ships with python.org and Windows installers; on Debian/Ubuntu "
+                  "install it with: sudo apt install python3-tk", file=sys.stderr)
+            return 1
+        return gui_main()
 
     if args.paste:
         print("Paste the listing HTML (or plain text), then press Ctrl-D:", file=sys.stderr)
