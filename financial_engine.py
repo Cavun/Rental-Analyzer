@@ -44,7 +44,7 @@ class OperatingExpenses:
     insurance_annual: float = 0.0
     hoa_annual: float = 0.0
     other_fixed_annual: float = 0.0        # lawn/snow, utilities landlord pays, etc.
-    management_pct: float = 0.08           # 8% of collected rent
+    management_pct: float = 0.0            # off by default; set per deal
     maintenance_pct: float = 0.08          # 8% repairs/turnover
     capex_reserve_pct: float = 0.08        # 8% roof/HVAC/appliance reserve
 

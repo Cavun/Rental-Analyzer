@@ -68,7 +68,7 @@ class EnrichmentAssumptions:
     tax_estimator_url: str = "https://treas-secure.state.mi.us/ptestimator"
 
     # Operating expense ratios (share of effective gross income).
-    management_pct: float = 0.08
+    management_pct: float = 0.0
     maintenance_pct: float = 0.08
     capex_reserve_pct: float = 0.08
     other_fixed_annual: float = 0.0

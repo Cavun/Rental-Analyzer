@@ -191,7 +191,6 @@ class RentalAnalyzerGUI(ttk.Frame):
         bar.pack(fill="x")
         ttk.Button(bar, text="Open listing HTML…", command=self.open_file).pack(side="left", padx=2)
         ttk.Button(bar, text="Paste listing…", command=self.paste_dialog).pack(side="left", padx=2)
-        ttk.Button(bar, text="Load sample", command=self.load_sample).pack(side="left", padx=2)
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=8)
         ttk.Button(bar, text="Underwrite", command=self.underwrite).pack(side="left", padx=2)
         ttk.Button(bar, text="Add to comparison", command=self.add_to_comparison).pack(side="left", padx=2)
@@ -516,7 +515,7 @@ class RentalAnalyzerGUI(ttk.Frame):
             insurance_annual=self.f_insurance.get(0.0) or 0.0,
             hoa_annual=(self.f_hoa.get(0.0) or 0.0) * 12,
             other_fixed_annual=self.f_other.get(0.0) or 0.0,
-            management_pct=(self.f_mgmt.get(8.0) or 0.0) / 100,
+            management_pct=(self.f_mgmt.get(0.0) or 0.0) / 100,
             maintenance_pct=(self.f_maint.get(8.0) or 0.0) / 100,
             capex_reserve_pct=(self.f_capex.get(8.0) or 0.0) / 100,
         )
@@ -777,7 +776,7 @@ class RentalAnalyzerGUI(ttk.Frame):
             self.f_down: "20", self.f_rate: "7.0", self.f_term: "30", self.f_closing: "3.0",
             self.f_capex0: "0", self.f_hold: "30", self.f_vacancy: "8.33",
             self.f_rent_growth: "3.0", self.f_exp_growth: "2.5", self.f_appreciation: "3.0",
-            self.f_mgmt: "8", self.f_maint: "8", self.f_capex: "8", self.f_other: "0",
+            self.f_mgmt: "0", self.f_maint: "8", self.f_capex: "8", self.f_other: "0",
             self.f_min_dscr: "1.25", self.f_min_cap: "5.0", self.f_min_coc: "8.0",
             self.f_min_irr: "10.0", self.f_min_cf: "0",
         }
