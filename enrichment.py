@@ -1,35 +1,36 @@
 """
 enrichment.py
 
-Fills in what the listing does not state, and corrects what it states
-misleadingly. Everything here is a transparent, deterministic assumption --
-no network calls, no APIs, no LLM. Every filled value carries a note saying
-where it came from so the report can show its work.
+Layers your figures and a small number of transparent assumptions onto a
+parsed listing, and flags what the listing implies but does not say.
+Everything here is deterministic -- no network calls, no APIs, no LLM. Every
+value carries a note saying where it came from so the report can show its
+work.
 
-The three things this module gets right that a naive read of the listing
-gets wrong:
+What changed, and why it matters:
 
-  1. RENT. The listing never states rent. House rule: monthly rent == 1% of
-     purchase price. This is a screening heuristic, not a market comp -- the
-     report labels it as such.
-  2. INSURANCE. Never stated. Estimated from purchase price with a floor,
-     bumped for older housing stock (pre-1960 wiring/plumbing/roof risk).
-  3. PROPERTY TAX -- the big one. The listing states the SELLER'S bill. In
-     Michigan (and every state with an assessment cap or an owner-occupancy
-     exemption) that bill is NOT what a buyer pays. On transfer the taxable
-     value uncaps to the SEV, and a rental loses the homestead/principal-
-     residence exemption (~18 mills of school operating tax in MI). Using the
-     seller's number is the single most common way a deal that doesn't work
-     looks like it does.
+  1. RENT is a REQUIRED INPUT. It used to default to 1% of purchase price.
+     That is a screening heuristic, not a comp, and it made every deal's
+     most load-bearing number a function of the seller's asking price --
+     raise the price and the model politely raised the rent to match. Pull
+     rent from actual comps and pass it in.
 
-     Tax is therefore an OPTIONAL INPUT. If you have run the property through
-     Michigan's official estimator --
+  2. PROPERTY TAX is a REQUIRED INPUT. It used to be estimated from the
+     seller's bill, taxable value, SEV and an assumed non-homestead millage.
+     That chain had too many places to be quietly wrong, and in Michigan
+     (and every state with an assessment cap or an owner-occupancy
+     exemption) the seller's bill is not what a buyer pays: on transfer the
+     taxable value uncaps to the SEV, and a rental loses the homestead
+     exemption. Run the parcel through the official estimator --
 
          https://treas-secure.state.mi.us/ptestimator
 
-     -- pass that figure in (`enrich(..., property_tax_annual=4884)` or
-     `main.py --tax 4884`) and it is used verbatim, with no estimating at all.
-     Only when no figure is supplied does the estimate chain below run.
+     -- and pass that figure in (`enrich(..., property_tax_annual=4884)` or
+     `main.py --tax 4884`). It is used verbatim.
+
+  3. INSURANCE is still estimated from purchase price with a floor, bumped
+     for older housing stock (pre-1960 wiring/plumbing/roof risk), unless
+     you pass a figure of your own.
 """
 
 from __future__ import annotations
@@ -38,18 +39,17 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from extraction import ListingData
-from financial_engine import (
-    OperatingExpenses,
-    PropertyInputs,
-    RENT_PCT_OF_PRICE,
-)
+from financial_engine import OperatingExpenses, PropertyInputs
+
+# A tax figure outside this band, as a share of price, is far more likely a
+# typo (a monthly bill, an extra zero) than a real assessment.
+TAX_SANITY_LOW = 0.005
+TAX_SANITY_HIGH = 0.04
 
 
 @dataclass
 class EnrichmentAssumptions:
     """Every knob this module turns. Override per-market as you learn."""
-
-    rent_pct_of_price: float = RENT_PCT_OF_PRICE
 
     # Insurance: landlord (DP-3) policy on a single-family rental.
     insurance_pct_of_price: float = 0.006   # 0.6% of price per year
@@ -57,31 +57,26 @@ class EnrichmentAssumptions:
     insurance_old_home_surcharge: float = 0.15  # +15% if built before...
     insurance_old_home_year: int = 1960
 
-    # Post-transfer property tax. Only used when no verified figure is
-    # supplied -- see estimate_post_transfer_tax().
-    uncap_taxable_to_sev: bool = True       # taxable value resets to SEV at sale
-    non_homestead_mills_adder: float = 18.0  # MI school operating millage a rental owes
-    fallback_tax_rate_pct_of_price: float = 0.015  # used only when tax data is missing
-    tax_growth_note_mills_cap: float = 80.0  # sanity ceiling on implied millage
-
-    # Where to get a verified number instead of any estimate.
+    # Where to get a verified tax number. There is no estimator here anymore.
     tax_estimator_url: str = "https://treas-secure.state.mi.us/ptestimator"
 
     # Operating expense ratios (share of effective gross income).
     management_pct: float = 0.0
     maintenance_pct: float = 0.08
     capex_reserve_pct: float = 0.08
+    # Landlord-paid utilities, lawn/snow, rental certification. $0 by default
+    # because on a single-family rental these are normally tenant-paid or
+    # nominal -- set it when a particular property needs it.
     other_fixed_annual: float = 0.0
 
 
 @dataclass
 class EnrichedListing:
     listing: ListingData
-    monthly_rent: float
+    monthly_rent: float                 # your figure
     insurance_annual: float
-    property_tax_annual: float          # the number used for underwriting
-    property_tax_source: str            # "provided" (verified) or "estimated"
-    seller_property_tax_annual: Optional[float]
+    property_tax_annual: float          # your figure
+    seller_property_tax_annual: Optional[float]   # reference only, never used
     hoa_monthly: float
     notes: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
@@ -92,11 +87,6 @@ class EnrichedListing:
 # Individual estimators
 # --------------------------------------------------------------------------
 
-def estimate_rent(price: float, assumptions: EnrichmentAssumptions) -> float:
-    """House rule: monthly rent is 1% of purchase price."""
-    return price * assumptions.rent_pct_of_price
-
-
 def estimate_insurance(listing: ListingData, assumptions: EnrichmentAssumptions) -> float:
     base = max(listing.price * assumptions.insurance_pct_of_price, assumptions.insurance_floor)
     if listing.year_built and listing.year_built < assumptions.insurance_old_home_year:
@@ -104,145 +94,21 @@ def estimate_insurance(listing: ListingData, assumptions: EnrichmentAssumptions)
     return round(base, 2)
 
 
-def estimate_post_transfer_tax(listing: ListingData,
-                               assumptions: EnrichmentAssumptions) -> tuple:
-    """
-    Estimate the annual property tax a BUYER holding this as a RENTAL pays.
-
-    Returns (annual_tax, note, warning_or_None).
-
-    Method, best case first:
-      A. Seller's bill + taxable value + SEV all known
-         -> implied millage = seller_tax / (taxable_value / 1000)
-         -> add the non-homestead adder if the seller had a homestead exemption
-         -> apply that millage to the uncapped (SEV) taxable value.
-      B. SEV known but no seller bill -> fall back to a % of price.
-      C. Nothing usable -> % of price, flagged loudly.
-    """
-    seller_tax = listing.property_tax_annual
-    taxable = listing.taxable_value
-    sev = listing.sev
-
-    if seller_tax and taxable and taxable > 0:
-        implied_mills = seller_tax / (taxable / 1000.0)
-        if implied_mills > assumptions.tax_growth_note_mills_cap:
-            return (
-                round(listing.price * assumptions.fallback_tax_rate_pct_of_price, 2),
-                f"Implied millage ({implied_mills:.1f}) looked wrong; "
-                f"fell back to {assumptions.fallback_tax_rate_pct_of_price:.2%} of price.",
-                "Property tax is an ESTIMATE -- verify with the assessor.",
-            )
-
-        had_homestead = (listing.homestead_pct or 0) > 0
-        mills = implied_mills + (assumptions.non_homestead_mills_adder if had_homestead else 0.0)
-
-        new_taxable = sev if (assumptions.uncap_taxable_to_sev and sev) else taxable
-        tax = mills * (new_taxable / 1000.0)
-
-        bits = [f"implied {implied_mills:.1f} mills from seller's bill"]
-        if had_homestead:
-            bits.append(f"+{assumptions.non_homestead_mills_adder:.0f} mills non-homestead (rental)")
-        if new_taxable != taxable:
-            bits.append(f"taxable uncaps ${taxable:,.0f} -> SEV ${new_taxable:,.0f} at sale")
-        note = "Post-transfer tax: " + "; ".join(bits) + f" = ${tax:,.0f}/yr"
-
-        warning = None
-        if seller_tax and tax > seller_tax * 1.25:
-            warning = (
-                f"Seller pays ${seller_tax:,.0f}/yr; a rental buyer should expect about "
-                f"${tax:,.0f}/yr ({tax / seller_tax:.1f}x). Underwriting uses the higher figure."
-            )
-        return round(tax, 2), note, warning
-
-    if seller_tax:
-        note = (
-            f"No taxable value/SEV on the listing; used the seller's ${seller_tax:,.0f}/yr "
-            "as-is. This is almost certainly LOW for a non-homestead buyer."
-        )
-        return (
-            round(seller_tax, 2),
-            note,
-            "Taxes not uncapped (missing assessment data) -- verify with the assessor.",
-        )
-
-    est = listing.price * assumptions.fallback_tax_rate_pct_of_price
-    return (
-        round(est, 2),
-        f"No tax data on the listing; estimated at {assumptions.fallback_tax_rate_pct_of_price:.2%} of price.",
-        "Property tax is a blind ESTIMATE -- verify before making an offer.",
-    )
-
-
 # --------------------------------------------------------------------------
-# Orchestration
+# Warnings -- pure inspection, computes nothing
 # --------------------------------------------------------------------------
 
-def enrich(listing: ListingData,
-           assumptions: Optional[EnrichmentAssumptions] = None,
-           property_tax_annual: Optional[float] = None) -> EnrichedListing:
+def listing_warnings(listing: ListingData) -> List[str]:
     """
-    Layer assumptions onto a parsed listing.
-
-    property_tax_annual: a VERIFIED annual tax figure, e.g. from Michigan's
-        official estimator at https://treas-secure.state.mi.us/ptestimator.
-        When supplied it is used verbatim and no tax estimating happens.
-        When omitted, estimate_post_transfer_tax() fills it in.
+    Everything worth flagging about a listing that does not depend on a
+    single underwriting assumption. Computes no values, so a caller that
+    owns all the numbers itself (the GUI) can use it on its own.
     """
-    assumptions = assumptions or EnrichmentAssumptions()
-    notes: List[str] = []
     warnings: List[str] = []
 
-    if not listing.price:
-        raise ValueError("Listing has no price; cannot underwrite.")
-
-    rent = estimate_rent(listing.price, assumptions)
-    notes.append(
-        f"Rent assumed at {assumptions.rent_pct_of_price:.2%} of price = ${rent:,.0f}/mo "
-        "(screening heuristic, NOT a market comp -- confirm against local rent comps)."
-    )
-
-    insurance = estimate_insurance(listing, assumptions)
-    ins_note = f"Insurance estimated at ${insurance:,.0f}/yr ({assumptions.insurance_pct_of_price:.2%} of price"
-    if listing.year_built and listing.year_built < assumptions.insurance_old_home_year:
-        ins_note += f", +{assumptions.insurance_old_home_surcharge:.0%} for pre-{assumptions.insurance_old_home_year} construction"
-    notes.append(ins_note + ").")
-
-    if property_tax_annual is not None:
-        if property_tax_annual < 0:
-            raise ValueError("property_tax_annual cannot be negative")
-        tax = round(float(property_tax_annual), 2)
-        tax_source = "provided"
-        notes.append(
-            f"Property tax PROVIDED: ${tax:,.0f}/yr -- used verbatim, not estimated."
-        )
-        # Still show what the listing implied, so a typo or a stale estimator
-        # run stands out instead of quietly setting the whole underwrite.
-        estimated, estimate_note, _ = estimate_post_transfer_tax(listing, assumptions)
-        notes.append(f"(For contrast, the listing-derived estimate would be: {estimate_note})")
-        if estimated and abs(tax - estimated) > max(0.35 * estimated, 750):
-            warnings.append(
-                f"Provided tax ${tax:,.0f}/yr differs sharply from the listing-derived "
-                f"estimate ${estimated:,.0f}/yr. Worth a second look at the estimator "
-                "inputs (taxable value, homestead status, millage) before trusting either."
-            )
-    else:
-        tax, tax_note, tax_warning = estimate_post_transfer_tax(listing, assumptions)
-        tax_source = "estimated"
-        notes.append(tax_note)
-        notes.append(
-            "Tax is an ESTIMATE. For a verified figure, run the parcel through "
-            f"{assumptions.tax_estimator_url} and pass it back in with --tax."
-        )
-        if tax_warning:
-            warnings.append(tax_warning)
-
-    hoa_monthly = listing.hoa_monthly
-    if hoa_monthly is None:
-        hoa_monthly = 0.0
-        if (listing.hoa_yn or "").strip().lower() not in ("no", "n", "false", ""):
-            warnings.append("Listing says there IS an HOA but states no dues; assumed $0 -- verify.")
-        else:
-            notes.append("No HOA dues found; assumed $0/mo.")
+    if listing.hoa_monthly is None and (listing.hoa_yn or "").strip().lower() not in (
+            "no", "n", "false", ""):
+        warnings.append("Listing says there IS an HOA but states no dues; assumed $0 -- verify.")
 
     for name in listing.missing_fields:
         warnings.append(f"Listing did not state '{name}' -- parsed value is missing or zero.")
@@ -256,13 +122,103 @@ def enrich(listing: ListingData,
         warnings.append(f"MLS status is '{listing.mls_status}' -- not an active listing.")
     if (listing.zoning or "").strip().lower() not in ("res", "residential", "r-1", ""):
         warnings.append(f"Zoning '{listing.zoning}' -- confirm long-term rental is permitted.")
+    return warnings
+
+
+def tax_sanity_warning(property_tax_annual: float, price: float) -> Optional[str]:
+    """
+    Non-blocking typo catcher. Outside roughly 0.5%-4% of price, a tax figure
+    is usually a monthly bill or has a digit too many/few.
+    """
+    if not price or property_tax_annual <= 0:
+        return None
+    share = property_tax_annual / price
+    if share < TAX_SANITY_LOW:
+        return (
+            f"Property tax ${property_tax_annual:,.0f}/yr is only {share:.2%} of price -- "
+            "unusually low. Did you enter a monthly figure, or drop a digit?"
+        )
+    if share > TAX_SANITY_HIGH:
+        return (
+            f"Property tax ${property_tax_annual:,.0f}/yr is {share:.2%} of price -- "
+            "unusually high. Check for an extra zero, or a figure that includes "
+            "special assessments."
+        )
+    return None
+
+
+# --------------------------------------------------------------------------
+# Orchestration
+# --------------------------------------------------------------------------
+
+def enrich(listing: ListingData,
+           assumptions: Optional[EnrichmentAssumptions] = None,
+           *,
+           property_tax_annual: float,
+           monthly_rent: float,
+           insurance_annual: Optional[float] = None) -> EnrichedListing:
+    """
+    Layer your figures onto a parsed listing.
+
+    property_tax_annual: REQUIRED annual tax in dollars, e.g. from Michigan's
+        official estimator at https://treas-secure.state.mi.us/ptestimator.
+        Used verbatim. Nothing here estimates tax.
+    monthly_rent: REQUIRED monthly rent in dollars, from local comps. Nothing
+        here estimates rent either.
+    insurance_annual: optional; estimated from price and age when omitted.
+    """
+    assumptions = assumptions or EnrichmentAssumptions()
+    notes: List[str] = []
+    warnings: List[str] = []
+
+    if not listing.price:
+        raise ValueError("Listing has no price; cannot underwrite.")
+
+    if monthly_rent is None or monthly_rent <= 0:
+        raise ValueError(
+            "monthly_rent is required -- enter a rent from local comps "
+            "(this model does not invent one)."
+        )
+    if property_tax_annual is None or property_tax_annual <= 0:
+        raise ValueError(
+            "property_tax_annual is required -- run the parcel through "
+            f"{assumptions.tax_estimator_url} and enter the figure."
+        )
+
+    rent = round(float(monthly_rent), 2)
+    notes.append(f"Rent (your figure): ${rent:,.0f}/mo.")
+
+    if insurance_annual is not None:
+        insurance = round(float(insurance_annual), 2)
+        notes.append(f"Insurance (your figure): ${insurance:,.0f}/yr.")
+    else:
+        insurance = estimate_insurance(listing, assumptions)
+        ins_note = (f"Insurance estimated at ${insurance:,.0f}/yr "
+                    f"({assumptions.insurance_pct_of_price:.2%} of price")
+        if listing.year_built and listing.year_built < assumptions.insurance_old_home_year:
+            ins_note += (f", +{assumptions.insurance_old_home_surcharge:.0%} for "
+                         f"pre-{assumptions.insurance_old_home_year} construction")
+        notes.append(ins_note + ").")
+
+    tax = round(float(property_tax_annual), 2)
+    notes.append(f"Property tax (your figure): ${tax:,.0f}/yr -- used verbatim.")
+    sanity = tax_sanity_warning(tax, listing.price)
+    if sanity:
+        warnings.append(sanity)
+
+    hoa_monthly = listing.hoa_monthly
+    if hoa_monthly is None:
+        hoa_monthly = 0.0
+        if (listing.hoa_yn or "").strip().lower() in ("no", "n", "false", ""):
+            notes.append("No HOA dues found; assumed $0/mo.")
+
+    warnings.extend(listing_warnings(listing))
 
     return EnrichedListing(
         listing=listing,
-        monthly_rent=round(rent, 2),
+        monthly_rent=rent,
         insurance_annual=insurance,
         property_tax_annual=tax,
-        property_tax_source=tax_source,
         seller_property_tax_annual=listing.property_tax_annual,
         hoa_monthly=float(hoa_monthly),
         notes=notes,

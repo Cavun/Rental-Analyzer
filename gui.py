@@ -14,8 +14,17 @@ Workflow:
     1. Load or paste a listing page, hit Parse.
     2. Every extracted field lands in an editable box. Fix anything the
        parser got wrong, or type a deal in by hand with no listing at all.
-    3. Adjust assumptions, hit Underwrite (or just press Enter in any box).
-    4. Add the deal to the comparison tab and move on to the next listing.
+    3. Fill in MONTHLY RENT (from comps) and ANNUAL PROPERTY TAX (from the
+       state estimator). Nothing fills these in for you, and both are
+       cleared on every new listing -- a rent or tax carried over from the
+       last property is an underwrite of a deal that does not exist.
+    4. Adjust assumptions, hit Underwrite (or just press Enter in any box).
+    5. Add the deal to the comparison tab and move on to the next listing.
+
+Year 1 is deliberately pessimistic: it carries lease-up vacancy and the
+make-ready spend. The stabilized (year 2) figures sit beside the headline
+ones so a deal that fails only on timing is distinguishable from one that
+fails on price.
 """
 
 from __future__ import annotations
@@ -29,12 +38,19 @@ from typing import Dict, List, Optional, Tuple
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from enrichment import EnrichmentAssumptions, enrich
+from enrichment import EnrichmentAssumptions, enrich, estimate_insurance
 from extraction import BS4_AVAILABLE, ListingData, ParserUnavailableError, parse_listing
-from financial_engine import OperatingExpenses, PropertyInputs, UnderwritingResult, underwrite
+from financial_engine import (
+    OperatingExpenses,
+    PropertyInputs,
+    UnderwritingResult,
+    default_make_ready,
+    underwrite,
+)
 from report import (
     BATCH_HEADERS,
     Thresholds,
+    format_after_tax,
     format_report,
     money,
     one_line_summary,
@@ -50,6 +66,7 @@ from sensitivity import (
     rent_growth_vs_vacancy,
     rent_level_grid,
 )
+from tax_engine import TaxAssumptions, after_tax as compute_after_tax
 
 TAX_ESTIMATOR_URL = EnrichmentAssumptions().tax_estimator_url
 MONO = ("Courier New", 10) if sys.platform == "win32" else ("Menlo" if sys.platform == "darwin" else "DejaVu Sans Mono", 10)
@@ -160,9 +177,13 @@ class RentalAnalyzerGUI(ttk.Frame):
         self.result: Optional[UnderwritingResult] = None
         self.enriched = None
         self.comparison: List[Tuple[str, List[str]]] = []
-        self._auto_tax: Optional[float] = None       # last auto-filled tax value
+        self.after_tax = None
+        # Insurance is the one figure still auto-filled; tracking the last
+        # auto value lets a listing reload refresh it without stomping on a
+        # number the user typed. Rent and tax are never auto-filled.
         self._auto_insurance: Optional[float] = None
-        self.status = tk.StringVar(value="Load a listing, or just type a price and hit Underwrite.")
+        self.status = tk.StringVar(
+            value="Load a listing, or type a price, rent and tax, then hit Underwrite.")
 
         self._build_toolbar()
         panes = ttk.PanedWindow(self, orient="horizontal")
@@ -236,39 +257,43 @@ class RentalAnalyzerGUI(ttk.Frame):
         self.f_county = LabeledEntry(prop, 3, 1, "County")
 
         # --- Tax ------------------------------------------------------
+        # One box. There is no estimator chain anymore: every path through it
+        # had somewhere to be quietly wrong, and the state's own estimator is
+        # a two-minute lookup that is simply correct.
         tax = self._section(holder, "Property tax")
-        self.f_seller_tax = LabeledEntry(
-            tax, 0, 0, "Seller's annual tax", suffix="$",
-            tooltip="What the SELLER pays today. Not what you will pay: it is capped "
-                    "and usually homestead-exempt. Shown for reference only.")
-        self.f_taxable = LabeledEntry(tax, 0, 1, "Taxable value", suffix="$")
-        self.f_sev = LabeledEntry(tax, 1, 0, "SEV", suffix="$")
-        self.f_homestead = LabeledEntry(tax, 1, 1, "Homestead %", suffix="%")
         self.f_tax = LabeledEntry(
-            tax, 2, 0, "ANNUAL TAX USED", suffix="$",
-            tooltip="The figure the underwrite actually uses. Auto-filled with an estimate "
-                    "when you parse a listing; type over it with a verified number from the "
-                    "state estimator and it is used verbatim.")
-        self.tax_source_label = ttk.Label(tax, text="", foreground=WARN_COLOR)
-        self.tax_source_label.grid(row=2, column=3, columnspan=3, sticky="w", padx=4)
+            tax, 0, 0, "Annual property tax (required)", width=14, suffix="$",
+            tooltip="What a RENTAL buyer will pay, not the seller's capped, usually "
+                    "homestead-exempt bill. Run the parcel through the state estimator "
+                    "(button below) and type the figure here. Used verbatim. Cleared "
+                    "on every new listing so the last property's tax cannot follow you.")
         button_row = ttk.Frame(tax)
-        button_row.grid(row=3, column=0, columnspan=6, sticky="w", pady=(4, 2))
+        button_row.grid(row=1, column=0, columnspan=6, sticky="w", pady=(4, 2))
         ttk.Button(button_row, text="Open MI tax estimator",
                    command=lambda: webbrowser.open(TAX_ESTIMATOR_URL)).pack(side="left", padx=4)
-        ttk.Button(button_row, text="Re-estimate from listing",
-                   command=self.reestimate_tax).pack(side="left", padx=4)
+        ttk.Label(button_row, text="Seller's bill on the listing is reference only.",
+                  foreground="#666").pack(side="left", padx=8)
 
         # --- Income ---------------------------------------------------
         income = self._section(holder, "Income")
-        self.f_rent = LabeledEntry(income, 0, 0, "Monthly rent", suffix="$",
-                                   tooltip="Auto-filled at 1% of price. Replace it with a real "
-                                           "rent comp as soon as you have one -- this is the "
-                                           "single most load-bearing number in the model.")
-        self.f_rent_pct_btn = ttk.Button(income, text="= 1% of price", width=13, command=self.apply_one_percent)
-        self.f_rent_pct_btn.grid(row=0, column=3, columnspan=2, sticky="w", padx=4)
+        self.f_rent = LabeledEntry(
+            income, 0, 0, "Monthly rent (required, from comps)", width=14, suffix="$",
+            tooltip="From actual local rent comps. Nothing auto-fills this: deriving "
+                    "rent from the asking price makes the model agree with whatever "
+                    "the seller asks, which is the opposite of useful. Cleared on "
+                    "every new listing.")
         self.f_vacancy = LabeledEntry(income, 1, 0, "Vacancy", suffix="%",
-                                      tooltip="8.33% = one vacant month per year.")
+                                      tooltip="8.33% = one vacant month per year, steady state.")
         self.f_rent_growth = LabeledEntry(income, 1, 1, "Rent growth", suffix="%/yr")
+        self.f_lease_up = LabeledEntry(
+            income, 2, 0, "Lease-up", suffix="months",
+            tooltip="YEAR 1 ONLY: months between closing and a paying tenant, on top "
+                    "of the steady-state vacancy rate. Years 2+ are unaffected. "
+                    "0-11, and total year-1 vacancy must stay under 12 months.")
+        self.f_repair_bump = LabeledEntry(
+            income, 2, 1, "Yr-1 repair bump", suffix="% EGI",
+            tooltip="Optional extra repair load in year 1 only -- the punch list a new "
+                    "owner always finds. 0 leaves lease-up as the only year-1 penalty.")
 
         # --- Financing ------------------------------------------------
         fin = self._section(holder, "Financing")
@@ -276,10 +301,20 @@ class RentalAnalyzerGUI(ttk.Frame):
         self.f_rate = LabeledEntry(fin, 0, 1, "Interest rate", suffix="%")
         self.f_term = LabeledEntry(fin, 1, 0, "Loan term", suffix="yrs")
         self.f_closing = LabeledEntry(fin, 1, 1, "Closing costs", suffix="%")
-        self.f_capex0 = LabeledEntry(fin, 2, 0, "Initial capex", suffix="$",
-                                     tooltip="Rehab budget. 0 for a turn-key property.")
+        self.f_capex0 = LabeledEntry(
+            fin, 2, 0, "Initial make-ready / rehab", width=14, suffix="$",
+            tooltip="Defaults to $2,500 or 1% of price, whichever is HIGHER. No "
+                    "property goes from someone else's house to a rentable unit for "
+                    "free -- locks, paint, cleaning, the one appliance that died. "
+                    "Set it to 0 only for a genuinely turn-key unit. Counts in total "
+                    "cash invested and in the cap-rate basis.")
         self.f_hold = LabeledEntry(fin, 2, 1, "Projection", suffix="yrs",
                                    tooltip="A forever hold is modeled over the full loan term.")
+        self.f_exit_cap = LabeledEntry(
+            fin, 3, 0, "Exit cap rate", suffix="%",
+            tooltip="Used for the cap-rate terminal value: year N+1 NOI divided by this "
+                    "rate. Blank defaults to the year-1 cap rate + 0.50%, since the "
+                    "building is older at exit than it is today.")
 
         # --- Operating expenses ---------------------------------------
         ops = self._section(holder, "Operating expenses")
@@ -288,9 +323,53 @@ class RentalAnalyzerGUI(ttk.Frame):
         self.f_mgmt = LabeledEntry(ops, 1, 0, "Management", suffix="% EGI")
         self.f_maint = LabeledEntry(ops, 1, 1, "Maintenance", suffix="% EGI")
         self.f_capex = LabeledEntry(ops, 2, 0, "Capex reserve", suffix="% EGI")
-        self.f_other = LabeledEntry(ops, 2, 1, "Other fixed", suffix="$/yr")
+        self.f_other = LabeledEntry(
+            ops, 2, 1, "Other fixed", suffix="$/yr",
+            tooltip="Landlord-paid utilities, lawn/snow, rental certification. $0 by "
+                    "default because on a single-family rental these are normally "
+                    "tenant-paid or nominal -- put a figure here when a particular "
+                    "property needs one.")
         self.f_exp_growth = LabeledEntry(ops, 3, 0, "Expense growth", suffix="%/yr")
         self.f_appreciation = LabeledEntry(ops, 3, 1, "Appreciation", suffix="%/yr")
+
+        # --- Income tax -----------------------------------------------
+        # Reported, never mixed into the pre-tax numbers: after-tax return is
+        # a fact about you, not about the building.
+        inc_tax = self._section(holder, "Income tax (reported, not screened)")
+        self.f_building_share = LabeledEntry(
+            inc_tax, 0, 0, "Building share", suffix="%",
+            tooltip="Land is not depreciable. 80% is a common default; the county "
+                    "assessor's land/improvement split is better.")
+        self.f_fed_rate = LabeledEntry(inc_tax, 0, 1, "Federal marginal", suffix="%")
+        self.f_state_rate = LabeledEntry(inc_tax, 1, 0, "State marginal", suffix="%",
+                                         tooltip="Michigan is 4.25%.")
+        self.f_city_rate = LabeledEntry(
+            inc_tax, 1, 1, "City income tax", suffix="%",
+            tooltip="Add it where one applies. Grand Rapids levies a city income tax, "
+                    "and it reaches a non-resident's rental income from property in "
+                    "the city.")
+        self.f_ltcg_rate = LabeledEntry(inc_tax, 2, 0, "Capital gains", suffix="%")
+        self.f_recapture_rate = LabeledEntry(
+            inc_tax, 2, 1, "Depr. recapture", suffix="%",
+            tooltip="Unrecaptured section 1250 gain, 25% federal maximum.")
+        self.f_magi = LabeledEntry(
+            inc_tax, 3, 0, "MAGI", suffix="$",
+            tooltip="Used only to phase out the $25,000 active-participation "
+                    "allowance: it drops $0.50 per $1 over $100,000 and is gone at "
+                    "$150,000. Blank means no phase-out.")
+        self.v_niit = tk.BooleanVar(value=False)
+        self.v_passive_usable = tk.BooleanVar(value=True)
+        niit_box = ttk.Checkbutton(inc_tax, text="NIIT (3.8%)", variable=self.v_niit)
+        niit_box.grid(row=3, column=3, columnspan=3, sticky="w", padx=6)
+        Tooltip(niit_box, "Net investment income tax on the gain at sale.")
+        passive_box = ttk.Checkbutton(inc_tax, text="Passive losses usable now",
+                                      variable=self.v_passive_usable)
+        passive_box.grid(row=4, column=0, columnspan=6, sticky="w", padx=6, pady=(2, 4))
+        Tooltip(passive_box,
+                "On: the $25,000 active-participation allowance applies, so a paper "
+                "loss offsets other income this year. Off: losses suspend and carry "
+                "forward, offsetting future passive income first and releasing in "
+                "full at sale.")
 
         # --- Thresholds -----------------------------------------------
         thr = self._section(holder, "Screening thresholds")
@@ -300,9 +379,15 @@ class RentalAnalyzerGUI(ttk.Frame):
         self.f_min_irr = LabeledEntry(thr, 1, 1, "Min IRR", suffix="%")
         self.f_min_cf = LabeledEntry(
             thr, 2, 0, "Min monthly CF", suffix="$",
-            tooltip="Year-1 cash flow after debt service. 0 means the deal may not "
-                    "cost you money every month. Set it negative to allow a deal you "
-                    "are willing to feed.")
+            tooltip="Year-1 cash flow after debt service, lease-up included. 0 means "
+                    "the deal may not cost you money every month. Set it negative to "
+                    "allow a deal you are willing to feed through its first year.")
+        self.f_min_at_irr = LabeledEntry(
+            thr, 2, 1, "Min after-tax IRR", suffix="%",
+            tooltip="Optional and OFF by default -- leave it blank. After-tax return "
+                    "depends on your bracket and your other passive income, so it is "
+                    "a personal number, not a property number. Fill it in to screen "
+                    "on it anyway.")
 
         self.reset_fields(keep_listing=False)
 
@@ -330,6 +415,7 @@ class RentalAnalyzerGUI(ttk.Frame):
         self.txt_report = self._text_tab("Report")
         self.txt_projection = self._text_tab("Projection")
         self.txt_sensitivity = self._text_tab("Sensitivity")
+        self.txt_after_tax = self._text_tab("After tax")
         self._build_comparison_tab()
 
     def _text_tab(self, title: str) -> tk.Text:
@@ -465,15 +551,28 @@ class RentalAnalyzerGUI(ttk.Frame):
         self.f_sqft.set(listing.sqft if listing.sqft is not None else "", decimals=0)
         self.f_year.set(str(listing.year_built) if listing.year_built else "")
         self.f_county.set(listing.county or "")
-        self.f_seller_tax.set(listing.property_tax_annual or "", decimals=0)
-        self.f_taxable.set(listing.taxable_value or "", decimals=0)
-        self.f_sev.set(listing.sev or "", decimals=0)
-        self.f_homestead.set(listing.homestead_pct if listing.homestead_pct is not None else "")
         self.f_hoa.set(listing.hoa_monthly if listing.hoa_monthly is not None else 0)
 
+        # Rent and tax are per-property figures the user supplies. Clearing
+        # them on every load is the whole point: a stale rent or tax carried
+        # over from the last listing is an underwrite of a property that does
+        # not exist, and it looks exactly like a real one.
+        self.f_rent.var.set("")
+        self.f_tax.var.set("")
+
         if listing.price:
-            self.apply_one_percent()
-            self.reestimate_tax()
+            # Insurance is still estimated, and this is now the only place it
+            # is auto-filled. It used to live inside reestimate_tax(), so
+            # removing the estimator would have silently stopped it.
+            estimate = estimate_insurance(listing, EnrichmentAssumptions())
+            typed = self.f_insurance.get()
+            if typed in (None, 0.0) or (self._auto_insurance is not None
+                                        and typed == self._auto_insurance):
+                self._auto_insurance = estimate
+                self.f_insurance.set(estimate, decimals=0)
+            # Make-ready scales with price, so reseed it unless the user has
+            # moved it off the default for the previous price.
+            self.f_capex0.set(default_make_ready(listing.price), decimals=0)
 
     # --- Reading the form back ------------------------------------------
 
@@ -495,14 +594,17 @@ class RentalAnalyzerGUI(ttk.Frame):
             price=self.f_price.get(0.0) or 0.0,
             beds=self.f_beds.get(), baths=self.f_baths.get(), sqft=self.f_sqft.get(),
             year_built=int(self.f_year.get(0) or 0) or None,
-            property_tax_annual=self.f_seller_tax.get(),
+            # The seller's bill, taxable value, SEV and homestead status are
+            # carried through from the parse for the report's reference line
+            # only -- nothing computes with them anymore.
+            property_tax_annual=base.property_tax_annual,
             hoa_monthly=self.f_hoa.get(0.0),
             days_on_market=base.days_on_market,
             mls_id=base.mls_id, mls_status=base.mls_status,
             county=self.f_county.get_text() or base.county,
             municipality=base.municipality, lot_acres=base.lot_acres,
-            taxable_value=self.f_taxable.get(), sev=self.f_sev.get(),
-            homestead_pct=self.f_homestead.get(), tax_year=base.tax_year,
+            taxable_value=base.taxable_value, sev=base.sev,
+            homestead_pct=base.homestead_pct, tax_year=base.tax_year,
             hoa_yn=base.hoa_yn, zoning=base.zoning,
             property_sub_type=base.property_sub_type, school_district=base.school_district,
             garage_spaces=base.garage_spaces, basement=base.basement, stories=base.stories,
@@ -521,7 +623,9 @@ class RentalAnalyzerGUI(ttk.Frame):
         )
         return PropertyInputs(
             purchase_price=listing.price,
-            monthly_rent=self.f_rent.get(listing.price * 0.01),
+            # No fallback: underwrite() refuses to run without a rent, so by
+            # the time we get here the box is known to hold one.
+            monthly_rent=self.f_rent.get(),
             down_payment_pct=(self.f_down.get(20.0) or 0.0) / 100,
             interest_rate=(self.f_rate.get(7.0) or 0.0) / 100,
             loan_term_years=int(self.f_term.get(30) or 30),
@@ -529,6 +633,10 @@ class RentalAnalyzerGUI(ttk.Frame):
             initial_capex=self.f_capex0.get(0.0) or 0.0,
             vacancy_rate=(self.f_vacancy.get(8.33) or 0.0) / 100,
             hold_years=int(self.f_hold.get(30) or 30),
+            lease_up_months=self.f_lease_up.get(1.0) or 0.0,
+            year1_repair_bump_pct=(self.f_repair_bump.get(0.0) or 0.0) / 100,
+            exit_cap_rate=((self.f_exit_cap.get() / 100)
+                           if self.f_exit_cap.get() else None),
             expenses=expenses,
             rent_growth=(self.f_rent_growth.get(3.0) or 0.0) / 100,
             expense_growth=(self.f_exp_growth.get(2.5) or 0.0) / 100,
@@ -543,6 +651,9 @@ class RentalAnalyzerGUI(ttk.Frame):
             min_cash_on_cash=(self.f_min_coc.get(8.0) or 0.0) / 100,
             min_irr=(self.f_min_irr.get(10.0) or 0.0) / 100,
             min_monthly_cash_flow=self.f_min_cf.get(0.0) or 0.0,
+            # Blank box == not screened, which is the default.
+            min_after_tax_irr=((self.f_min_at_irr.get() / 100)
+                               if self.f_min_at_irr.get() is not None else None),
             # max_breakeven_occupancy is deliberately left unset: vacancy is
             # already deducted in every metric, so screening on breakeven
             # occupancy would flag the same weakness twice. It is reported as
@@ -551,41 +662,19 @@ class RentalAnalyzerGUI(ttk.Frame):
 
     # --- Actions --------------------------------------------------------
 
-    def apply_one_percent(self) -> None:
-        price = self.f_price.get(0.0) or 0.0
-        if price:
-            self.f_rent.set(price * 0.01, decimals=0)
-
-    def reestimate_tax(self) -> None:
-        """Fill the tax box with the listing-derived estimate."""
-        listing = self.listing_from_fields()
-        if not listing.price:
-            return
-        try:
-            enriched = enrich(listing)
-        except ValueError:
-            return
-        self._auto_tax = enriched.property_tax_annual
-        self.f_tax.set(enriched.property_tax_annual, decimals=0)
-        if self._auto_insurance is None or self.f_insurance.get(0.0) in (None, 0.0, self._auto_insurance):
-            self._auto_insurance = enriched.insurance_annual
-            self.f_insurance.set(enriched.insurance_annual, decimals=0)
-        self._refresh_tax_source_label()
-
-    def _tax_is_provided(self) -> bool:
-        """True when the user typed over the auto-filled estimate."""
-        current = self.f_tax.get()
-        if current is None:
-            return False
-        if self._auto_tax is None:
-            return True
-        return abs(current - self._auto_tax) > 0.51
-
-    def _refresh_tax_source_label(self) -> None:
-        if self._tax_is_provided():
-            self.tax_source_label.configure(text="VERIFIED (your figure)", foreground=OK_COLOR)
-        else:
-            self.tax_source_label.configure(text="estimated from listing", foreground=WARN_COLOR)
+    def tax_assumptions_from_fields(self) -> TaxAssumptions:
+        magi = self.f_magi.get()
+        return TaxAssumptions(
+            building_share=(self.f_building_share.get(80.0) or 80.0) / 100,
+            federal_ordinary_rate=(self.f_fed_rate.get(22.0) or 0.0) / 100,
+            state_ordinary_rate=(self.f_state_rate.get(4.25) or 0.0) / 100,
+            city_ordinary_rate=(self.f_city_rate.get(0.0) or 0.0) / 100,
+            capital_gains_rate=(self.f_ltcg_rate.get(15.0) or 0.0) / 100,
+            depreciation_recapture_rate=(self.f_recapture_rate.get(25.0) or 0.0) / 100,
+            niit=bool(self.v_niit.get()),
+            passive_losses_usable=bool(self.v_passive_usable.get()),
+            magi=magi if magi else None,
+        )
 
     def underwrite(self) -> None:
         listing = self.listing_from_fields()
@@ -593,48 +682,79 @@ class RentalAnalyzerGUI(ttk.Frame):
             self.status.set("Enter a purchase price to underwrite.")
             return
 
-        self._refresh_tax_source_label()
-        provided_tax = self.f_tax.get() if self._tax_is_provided() else None
+        # Rent and tax are validated HERE, before anything downstream runs,
+        # so nothing ever sees a missing figure and quietly substitutes one.
+        rent = self.f_rent.get()
+        if not rent or rent <= 0:
+            self.status.set("Enter a monthly rent (from comps) to underwrite. "
+                            "Nothing fills this in for you.")
+            return
+        tax = self.f_tax.get()
+        if not tax or tax <= 0:
+            self.status.set("Enter an annual property tax to underwrite. Use the MI tax "
+                            "estimator button -- the seller's bill is not your bill.")
+            return
+
         try:
-            enriched = enrich(listing, property_tax_annual=provided_tax)
-            # The form is the source of truth for the numbers it owns.
-            enriched.monthly_rent = self.f_rent.get(enriched.monthly_rent) or enriched.monthly_rent
-            enriched.insurance_annual = self.f_insurance.get(enriched.insurance_annual)
-            enriched.property_tax_annual = self.f_tax.get(enriched.property_tax_annual)
+            # Every number the form owns goes IN to enrich(); it computes no
+            # figure the form would then have to overwrite. Its job here is
+            # notes, warnings and the tax sanity check.
+            enriched = enrich(
+                listing,
+                property_tax_annual=tax,
+                monthly_rent=rent,
+                insurance_annual=self.f_insurance.get(),
+            )
             inputs = self.inputs_from_fields(listing)
             result = underwrite(inputs)
+            after_tax = compute_after_tax(result, self.tax_assumptions_from_fields())
         except Exception as exc:
             self.status.set(f"Could not underwrite: {exc}")
             messagebox.showerror("Underwriting failed", str(exc))
             return
 
         self.listing, self.enriched, self.result = listing, enriched, result
+        self.after_tax = after_tax
         thresholds = self.thresholds_from_fields()
 
-        self._set_text(self.txt_report, format_report(result, enriched, thresholds, projection_years=0))
+        self._set_text(self.txt_report,
+                       format_report(result, enriched, thresholds, projection_years=0))
         self._set_text(self.txt_projection, self._projection_text(result))
         self._set_text(self.txt_sensitivity, self._sensitivity_text(inputs))
+        self._set_text(self.txt_after_tax, format_after_tax(after_tax, result))
         self._update_banner(result, thresholds)
         self.status.set(
-            f"Underwrote {listing.full_address or listing.address or 'deal'} at {money(listing.price)}"
-            + ("  |  tax: your verified figure" if provided_tax is not None else "  |  tax: estimated")
+            f"Underwrote {listing.full_address or listing.address or 'deal'} at "
+            f"{money(listing.price)}  |  rent {money(rent)}/mo, tax {money(tax)}/yr "
+            "(both your figures)"
         )
 
     def _update_banner(self, result: UnderwritingResult, thresholds: Thresholds) -> None:
-        checks = screen(result, thresholds)
+        checks = screen(result, thresholds, self.after_tax)
         text = verdict(checks)
         color = OK_COLOR if text.startswith("INVESTIGATE") else (
             WARN_COLOR if text.startswith("MARGINAL") else BAD_COLOR)
         self.verdict_label.configure(text=text, foreground=color)
-        chips = "   ".join([
+        chips = "Year 1 (incl. lease-up):   " + "   ".join([
             f"Cap {result.cap_rate * 100:5.2f}%",
             f"CoC {result.cash_on_cash * 100:6.2f}%",
             f"DSCR {result.dscr:4.2f}",
-            f"IRR {((result.irr_with_equity or 0) * 100):5.2f}%",
+            f"IRR {((result.irr_screened or 0) * 100):5.2f}%",
             f"Cash flow {money(result.monthly_cash_flow)}/mo",
             f"Breakeven occ {result.breakeven_occupancy * 100:5.1f}%",
             f"Cash in {money(result.total_cash_invested)}",
         ])
+        if result.multiple_irr_possible:
+            chips += "   (multiple IRRs possible)"
+        if result.stabilized_dscr is not None:
+            chips += ("\nStabilized (year 2):      "
+                      f"DSCR {result.stabilized_dscr:4.2f}   "
+                      f"CoC {result.stabilized_cash_on_cash * 100:6.2f}%   "
+                      f"Cash flow {money(result.stabilized_monthly_cash_flow)}/mo")
+        if self.after_tax is not None:
+            chips += ("\nAfter tax:                "
+                      f"IRR {((self.after_tax.irr_screened or 0) * 100):5.2f}%   "
+                      f"Year-1 CF {money(self.after_tax.year1_after_tax_cash_flow / 12)}/mo")
         self.metrics_label.configure(text=chips)
 
     def _projection_text(self, result: UnderwritingResult) -> str:
@@ -661,8 +781,8 @@ class RentalAnalyzerGUI(ttk.Frame):
         ]
         be = breakeven_rent(inputs)
         gap = (be - inputs.monthly_rent) / inputs.monthly_rent if inputs.monthly_rent else 0.0
-        parts.append(f"Breakeven rent (year-1 cash flow = $0): {money(be)}/mo "
-                     f"vs assumed {money(inputs.monthly_rent)}/mo ({gap:+.1%}).")
+        parts.append(f"Breakeven rent (year-1 cash flow = $0, lease-up included): {money(be)}/mo "
+                     f"vs your {money(inputs.monthly_rent)}/mo ({gap:+.1%}).")
         return "\n\n".join(parts)
 
     # --- Comparison -----------------------------------------------------
@@ -673,10 +793,12 @@ class RentalAnalyzerGUI(ttk.Frame):
             return
         label = self.f_address.get_text() or self.result.inputs.label or "Unnamed deal"
         row = one_line_summary(self.result, self.thresholds_from_fields(), label)
+        # IRR in this row is the SCREENED IRR (the lower of the two exits),
+        # matching the screening table -- see report.one_line_summary.
         tag = "pass" if row[-1] == "PASS" else "flag"
         self.tree.insert("", "end", values=row, tags=(tag,))
         self.comparison.append((label, row))
-        self.tabs.select(3)
+        self.tabs.select(4)
         self.status.set(f"Added {label} to the comparison ({len(self.comparison)} deal(s)).")
 
     def remove_selected(self) -> None:
@@ -708,7 +830,8 @@ class RentalAnalyzerGUI(ttk.Frame):
         if not path:
             return
         content = "\n\n".join([
-            format_report(self.result, self.enriched, self.thresholds_from_fields()),
+            format_report(self.result, self.enriched, self.thresholds_from_fields(),
+                          after_tax=self.after_tax),
             self._sensitivity_text(self.result.inputs),
             self._projection_text(self.result),
         ])
@@ -727,10 +850,15 @@ class RentalAnalyzerGUI(ttk.Frame):
         payload = {
             "listing": self.listing.to_dict(),
             "assumptions": {
+                # Rent and tax are always the user's figures now, so there is
+                # no source to record.
                 "monthly_rent": inputs.monthly_rent,
                 "property_tax_annual": inputs.expenses.property_tax_annual,
-                "property_tax_source": "provided" if self._tax_is_provided() else "estimated",
                 "insurance_annual": inputs.expenses.insurance_annual,
+                "initial_make_ready": inputs.initial_capex,
+                "lease_up_months": inputs.lease_up_months,
+                "year1_repair_bump_pct": inputs.year1_repair_bump_pct,
+                "exit_cap_rate": result.exit_cap_rate_used,
                 "down_payment_pct": inputs.down_payment_pct,
                 "interest_rate": inputs.interest_rate,
                 "loan_term_years": inputs.loan_term_years,
@@ -742,15 +870,37 @@ class RentalAnalyzerGUI(ttk.Frame):
                 "cap_rate": result.cap_rate,
                 "cash_on_cash": result.cash_on_cash,
                 "dscr": result.dscr,
-                "irr_with_equity": result.irr_with_equity,
-                "irr_cash_flow_only": result.irr_cash_flow_only,
+                "irr_appreciation_exit": result.irr_appreciation_exit,
+                "irr_cap_rate_exit": result.irr_cap_rate_exit,
+                "irr_screened": result.irr_screened,
+                "multiple_irr_possible": result.multiple_irr_possible,
                 "monthly_cash_flow": result.monthly_cash_flow,
                 "year1_noi": result.year1_noi,
                 "breakeven_occupancy": result.breakeven_occupancy,
+                "stabilized_dscr": result.stabilized_dscr,
+                "stabilized_cash_on_cash": result.stabilized_cash_on_cash,
+                "stabilized_monthly_cash_flow": result.stabilized_monthly_cash_flow,
+                "terminal_value_cap_rate": result.terminal_value_cap_rate,
+                "net_sale_appreciation": result.net_sale_appreciation,
+                "net_sale_cap_rate": result.net_sale_cap_rate,
+                "exit_values_disagree": result.exit_values_disagree,
             },
             "notes": self.enriched.notes if self.enriched else [],
             "warnings": self.enriched.warnings if self.enriched else [],
         }
+        if self.after_tax is not None:
+            payload["after_tax"] = {
+                "year1_after_tax_cash_flow": self.after_tax.year1_after_tax_cash_flow,
+                "irr_appreciation_exit": self.after_tax.irr_appreciation_exit,
+                "irr_cap_rate_exit": self.after_tax.irr_cap_rate_exit,
+                "irr_screened": self.after_tax.irr_screened,
+                "depreciable_basis": self.after_tax.depreciable_basis,
+                "accumulated_depreciation": self.after_tax.accumulated_depreciation,
+                "suspended_balance_at_sale": self.after_tax.suspended_balance_at_sale,
+                "total_tax_on_operations": self.after_tax.total_tax_on_operations,
+                "exit_tax_appreciation": self.after_tax.sale_appreciation.total_tax,
+                "exit_tax_cap_rate": self.after_tax.sale_cap_rate.total_tax,
+            }
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=2, default=str)
         self.status.set(f"Saved JSON to {path}")
@@ -774,24 +924,31 @@ class RentalAnalyzerGUI(ttk.Frame):
     def reset_fields(self, keep_listing: bool = True) -> None:
         defaults: Dict[LabeledEntry, str] = {
             self.f_down: "20", self.f_rate: "7.0", self.f_term: "30", self.f_closing: "3.0",
-            self.f_capex0: "0", self.f_hold: "30", self.f_vacancy: "8.33",
+            self.f_capex0: "2,500", self.f_hold: "30", self.f_vacancy: "8.33",
             self.f_rent_growth: "3.0", self.f_exp_growth: "2.5", self.f_appreciation: "3.0",
+            self.f_lease_up: "1", self.f_repair_bump: "0", self.f_exit_cap: "",
             self.f_mgmt: "0", self.f_maint: "8", self.f_capex: "8", self.f_other: "0",
+            self.f_building_share: "80", self.f_fed_rate: "22", self.f_state_rate: "4.25",
+            self.f_city_rate: "0", self.f_ltcg_rate: "15", self.f_recapture_rate: "25",
+            self.f_magi: "",
             self.f_min_dscr: "1.25", self.f_min_cap: "5.0", self.f_min_coc: "8.0",
-            self.f_min_irr: "10.0", self.f_min_cf: "0",
+            self.f_min_irr: "10.0", self.f_min_cf: "0", self.f_min_at_irr: "",
         }
         for widget, value in defaults.items():
             widget.var.set(value)
+        self.v_niit.set(False)
+        self.v_passive_usable.set(True)
         if not keep_listing:
             return
         self.listing = ListingData()
         for widget in (self.f_address, self.f_price, self.f_beds, self.f_baths, self.f_sqft,
-                       self.f_year, self.f_county, self.f_seller_tax, self.f_taxable,
-                       self.f_sev, self.f_homestead, self.f_tax, self.f_rent,
+                       self.f_year, self.f_county, self.f_tax, self.f_rent,
                        self.f_insurance, self.f_hoa):
             widget.var.set("")
-        self._auto_tax = self._auto_insurance = None
-        self.status.set("Cleared. Load a listing or type a deal in by hand.")
+        self._auto_insurance = None
+        self.after_tax = None
+        self.status.set("Cleared. Load a listing or type a deal in by hand "
+                        "(price, rent and tax are all required).")
 
 
 def main() -> int:

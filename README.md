@@ -23,9 +23,17 @@ assumption, and the report, projection and sensitivity grids update on
 - **Nothing is locked.** Every parsed field is editable, so you can correct a
   bad parse, underwrite your offer instead of the asking price, or type a
   deal in by hand with no listing at all.
-- **The tax box says where its number came from** — *estimated from listing*
-  in amber, or **VERIFIED (your figure)** in green once you type over it.
-  There is a button that opens the state estimator right next to it.
+- **Rent and property tax are required, and nothing fills them in for you.**
+  Both boxes are cleared on every listing load, so last property's figures
+  cannot follow you onto this one. A button opens the state tax estimator
+  right next to the tax box. Underwrite refuses, with a message, until both
+  are filled.
+- **Year 1 is pessimistic on purpose** — it carries lease-up vacancy and the
+  make-ready spend. The banner labels the headline metrics *Year 1 (incl.
+  lease-up)* and prints a *Stabilized (year 2)* line beside them, so a deal
+  that fails only on timing is distinguishable from one that fails on price.
+- **An "After tax" tab** reports depreciation, passive losses and the tax due
+  at sale. Reported, never mixed into the pre-tax numbers.
 - **Comparison tab** stacks deals as you screen them, one row each, colored
   by PASS/FLAG. Export it to CSV.
 - **Export** the full report as text or JSON.
@@ -74,11 +82,14 @@ python3 main.py listing.html --json          # machine-readable output
 Common overrides:
 
 ```bash
-python3 main.py listing.html --price 265000  # underwrite your offer, not the ask
-python3 main.py listing.html --rent 1650     # a real rent comp beats the 1% rule
-python3 main.py listing.html --tax 4884      # a verified tax figure beats any estimate
-python3 main.py listing.html --rate 0.0665   # the rate you were actually quoted
-python3 main.py listing.html --min-coc 0.06  # loosen the screen
+# --rent and --tax are REQUIRED on every run.
+python3 main.py listing.html --rent 1650 --tax 4884
+
+python3 main.py listing.html --rent 1650 --tax 4884 --price 265000  # your offer, not the ask
+python3 main.py listing.html --rent 1650 --tax 4884 --rate 0.0665   # the rate you were quoted
+python3 main.py listing.html --rent 1650 --tax 4884 --lease-up 2    # slower lease-up
+python3 main.py listing.html --rent 1650 --tax 4884 --after-tax     # add the tax layer
+python3 main.py listing.html --rent 1650 --tax 4884 --min-coc 0.06  # loosen the screen
 ```
 
 ## Standing assumptions
@@ -92,55 +103,96 @@ Fixed for every listing so deals stay comparable (all in
 | Interest rate | 7.00% |
 | Loan term | 30 years, fully amortizing |
 | Closing costs | 3% of purchase price |
-| Initial capex | $0 (turn-key) |
-| Monthly rent | 1% of purchase price |
-| Vacancy | 1 month/year (8.33%) |
+| Make-ready / initial capex | $2,500 or 1% of price, whichever is higher |
+| Monthly rent | **Required input** — from comps, never derived |
+| Property tax | **Required input** — from the state estimator, used verbatim |
+| Vacancy | 1 month/year (8.33%) steady state |
+| Lease-up | 1 month, year 1 only, on top of the vacancy rate |
+| Exit cap rate | Year-1 cap rate + 0.50% |
 | Hold period | Forever — projected over the full 30-year loan term |
 | Management / maintenance / capex reserve | 0% (self-managed) / 8% / 8% of effective gross income |
 | Rent growth / expense growth / appreciation | 3% / 2.5% / 3% |
 
-## Three things this gets right that a naive read does not
+## Four things this gets right that a naive read does not
 
-**1. The seller's tax bill is not your tax bill.** The listing states the
-*seller's* annual property tax. In Michigan — and in every state with an
-assessment cap or an owner-occupancy exemption — that number resets when the
-property sells. Taxable value uncaps to the SEV, and a rental loses the
-homestead exemption (~18 mills of school operating tax).
+**1. The two numbers that decide the deal are yours to supply.** Rent and
+property tax move a deal further than anything else in the model, and both
+used to be estimated. Neither is anymore.
 
-Because this number moves the deal more than any other expense, **tax is an
-optional input**. Run the parcel through Michigan's official estimator —
-<https://treas-secure.state.mi.us/ptestimator> — and pass the result in:
+*Rent* used to default to 1% of purchase price. That made the single most
+load-bearing number in the deal a function of the seller's asking price:
+raise the price and the model politely raised the rent to match. Pull rent
+from actual comps and pass `--rent`.
+
+*Tax* used to be estimated from the seller's bill, the taxable value, the
+SEV and an assumed non-homestead millage. The correction was right in
+principle — in Michigan, and in every state with an assessment cap or an
+owner-occupancy exemption, the taxable value uncaps to the SEV on transfer
+and a rental loses the homestead exemption (~18 mills of school operating
+tax), so the seller's bill is never your bill. But the chain had four
+places to be quietly wrong and the state's own estimator is a two-minute
+lookup that is simply correct. Run the parcel through
+<https://treas-secure.state.mi.us/ptestimator> and pass `--tax`.
 
 ```bash
-python3 main.py listing.html --tax 4884
+python3 main.py listing.html --rent 1650 --tax 4884
 ```
 
-It is then used verbatim, with no estimating at all. The report labels that
-line **VERIFIED (provided)**, still prints the listing-derived estimate
-alongside it for contrast, and warns if the two are more than ~35% apart —
-that gap usually means a wrong homestead flag or a stale taxable value in
-one of them.
+Both are used verbatim. The seller's stated tax is still parsed and printed
+for reference, and nothing computes with it. A non-blocking warning fires if
+your tax figure falls outside ~0.5–4% of price, which catches a monthly
+figure typed into an annual box or a stray zero.
 
-Omit `--tax` and the original estimate chain runs unchanged: back the implied
-millage out of the seller's bill, add the non-homestead adder, apply it to
-the uncapped (SEV) value, and fall back to a percentage of price only when
-the listing states no assessment data at all.
+**2. Year 1 is not the stabilized year, and pretending otherwise flatters
+every deal.** You do not close on a property and collect rent the next
+morning. Year 1 carries **lease-up months** (default 1) on top of the
+steady-state vacancy rate, and a **make-ready** spend (default $2,500 or 1%
+of price, whichever is higher) in total cash invested and the cap-rate
+basis. Years 2+ are unaffected.
 
-On the sample listing the estimate is **$2,184/yr stated → $5,245/yr
-actual**, a $255/month swing that turns a marginal deal into a losing one.
-The report always shows both numbers and underwrites the higher one.
+The headline metrics — DSCR, cash-on-cash, monthly cash flow, cap rate —
+are year 1, and the verdict screens on them. A **Stabilized (year 2)** line
+prints beside them, so a deal that fails only because of lease-up reads
+differently from one that fails permanently. Set `--lease-up 0 --capex 0`
+to get the old, sunnier numbers back.
 
-**2. A cash-flow-only IRR undersells a forever hold; an appreciation-only one
-oversells it.** With no sale date, a pure cash-flow IRR ignores 30 years of
-principal paydown. The report prints both: `IRR (w/ equity)` assumes a
-hypothetical liquidation at year 30 purely so equity is represented, and
-`IRR cash-flow-only` for the true never-sell case.
+**3. Two ways to value the exit, and the deal is judged on the worse one.**
+A cash-flow-only IRR truncated value at loan payoff and misstated a forever
+hold, so it is gone. In its place are two independent terminal values:
+appreciation-based (price compounded at your appreciation rate) and
+cap-rate-based (year N+1 NOI over an exit cap, defaulting to the year-1 cap
+rate + 0.50%). Both are reported net of selling costs and loan payoff, an
+IRR is computed under each, and **the screen uses the lower one**. If the
+two differ by more than ~25%, the report says so: that gap means your
+appreciation and rent-growth assumptions disagree about what the building
+is worth, and one of them is wrong.
 
-**3. The 1% rule is a screen, not a comp.** Rent at 1% of price is what
-you asked for and it is what the model uses — but it is the single most
-load-bearing assumption in the deal, so there is a dedicated rent-level
-sensitivity grid and a breakeven-rent figure showing exactly where the deal
-stops working. Override it with `--rent` the moment you have a real comp.
+Property value is **end of year** throughout: year *N* value is
+price × (1 + g)^*N*, so year 1 earns a year of appreciation like every
+other year. The IRR solver falls through to bisection when Newton runs out
+of iterations rather than reporting "no IRR", finds its brackets by
+scanning NPV instead of assuming the endpoints straddle a root, and flags
+when the cash-flow series changes sign more than once — several rates can
+solve NPV = 0 and the report says so rather than printing one as if it were
+the answer.
+
+**4. After-tax return is a fact about you, not about the building.** So it
+is reported and never mixed into the pre-tax numbers, and it is not screened
+unless you set a threshold yourself. `tax_engine.py` reads the finished
+projection and models straight-line depreciation on the building share of
+basis, taxable income as NOI less interest less depreciation (principal is
+not a deduction), the $25,000 active-participation allowance with its
+$100k–$150k MAGI phase-out, suspended losses carried forward and released at
+sale, and the split at exit between unrecaptured §1250 gain at 25% and
+long-term capital gain, plus state tax and NIIT.
+
+It deliberately overstates deductions in two places, both noted in the
+output: the capex reserve is treated as deductible when accrued (strictly,
+capex is capitalized), and loan costs ride in the depreciable basis
+(strictly, they amortize over the loan term). It also assumes a **taxable
+sale** — a property you never sell gets a basis step-up at death that wipes
+out the exit tax entirely, so the after-tax IRR is the pessimistic end of
+the range for a genuine forever hold.
 
 ## Screening thresholds
 
@@ -151,11 +203,18 @@ Defaults (tunable via `report.Thresholds` or the `--min-*` flags):
 | DSCR | ≥ 1.25 |
 | Cap rate | ≥ 5% |
 | Cash-on-cash | ≥ 8% |
-| IRR (with equity) | ≥ 10% |
+| IRR (lower of the two exits) | ≥ 10% |
 | Monthly cash flow | ≥ $0 |
+| After-tax IRR | off by default |
 
-Every threshold has a box in the GUI; the CLI exposes the first three as
-`--min-*` flags and takes the rest from `report.Thresholds`.
+All of these are **year 1, lease-up included**. Every threshold has a box in
+the GUI; the CLI exposes the first three as `--min-*` flags and takes the
+rest from `report.Thresholds`.
+
+**After-tax IRR is reported, not screened,** unless you set
+`Thresholds.min_after_tax_irr` or fill the GUI box. It depends on your
+bracket and your other passive income, so it is a personal number rather
+than a property one.
 
 **Breakeven occupancy is reported, not screened.** Vacancy is already an
 input, deducted from gross rent before every metric is computed, so the deal
@@ -175,15 +234,16 @@ two misses, DSCR intact) · **PASS ON IT**.
 | File | Role |
 |---|---|
 | `extraction.py` | flexmls/Spark HTML → `ListingData`. Reads the `data-map--ldp-listing` JSON blob for core fields, walks `.listing-detail-field-line` pairs for the rest. Plain-text fallback for other templates. |
-| `enrichment.py` | Fills in what the listing omits: rent, insurance, and the post-transfer tax correction. Accepts a verified tax figure via `property_tax_annual=` / `--tax`. Every value carries a note. |
-| `financial_engine.py` | All arithmetic. `PropertyInputs` → year-by-year projection, cap rate, CoC, DSCR, breakeven occupancy, IRR via self-contained Newton-Raphson (bisection fallback). No numpy. |
-| `sensitivity.py` | Grids: rent growth × vacancy, interest rate, rent level. Deep-copies the base inputs per run. |
+| `enrichment.py` | Takes your required rent and tax verbatim, estimates insurance, and collects the notes and warnings (HOA, pre-1960 stock, MLS status, zoning, tax sanity). Computes no deal figure you did not supply. |
+| `financial_engine.py` | All arithmetic. `PropertyInputs` → year-by-year projection, cap rate, CoC, DSCR, breakeven occupancy, both exit IRRs via self-contained Newton-Raphson with a scanning bisection fallback. No numpy. |
+| `tax_engine.py` | The after-tax layer. Reads a finished `UnderwritingResult` and never changes a pre-tax number: depreciation, passive-loss carryforward, recapture and capital gains at sale, after-tax IRRs. |
+| `sensitivity.py` | Grids: rent growth × vacancy, interest rate, and rent level centred on **your** entered rent (−20% to +5%, labelled in dollars). Deep-copies the base inputs per run. |
 | `report.py` | Text report with PASS/FLAG markers and a fixed-width table renderer. |
 | `gui.py` | Tkinter desktop app over the same pipeline — editable fields, live report, comparison table, CSV/JSON export. |
 | `main.py` | CLI wiring: extract → enrich → finance → report → sensitivity. `--gui` launches the desktop app. |
 | `rental_analyzer.spec` | PyInstaller recipe for a standalone double-clickable build. Preflights the parser, bundles bs4 via `collect_all`, and uses onedir on macOS / onefile elsewhere. |
 | `sample_listing.py` | A realistic fabricated flexmls page so `python3 main.py` runs with no setup. |
-| `tests/` | `python3 -m unittest discover tests` — 47 tests over loan math, IRR, the tax input and correction, grid isolation, and the GUI (widget tests skip automatically on a headless box). |
+| `tests/` | `python3 -m unittest discover tests` — 155 tests over loan math, the IRR solver, the required rent and tax inputs, year-1 pessimism, end-of-year appreciation, both exits, the after-tax layer, grid isolation, and the GUI (widget tests skip automatically on a headless box). |
 
 ## Extending it
 
@@ -193,13 +253,17 @@ two misses, DSCR intact) · **PASS ON IT**.
 - **Real data feeds**: if you get licensed access (Spark/RESO Web API,
   RentCast, ATTOM), write an adapter that returns `ListingData` via
   `from_structured_input()` — nothing downstream changes.
-- **Per-market tuning**: `EnrichmentAssumptions` holds every estimate knob
-  (insurance rate, millage adder, expense ratios) in one place.
+- **Per-market tuning**: `EnrichmentAssumptions` holds the remaining estimate
+  knobs (insurance rate and surcharge, expense ratios) in one place;
+  `TaxAssumptions` holds the whole after-tax position.
 
 ## Caveats
 
-This is a screening model, not an appraisal. Rent and insurance are always
-estimates, and so is tax unless you pass `--tax`. Verify rent against local
-comps, and get a real tax figure from the
+This is a screening model, not an appraisal. Rent and property tax are your
+figures and nothing here second-guesses them — which means a bad comp or a
+mistyped tax bill propagates straight through to the verdict. Insurance,
+growth rates, the exit cap and every tax rate are assumptions. Confirm rent
+against current comps and tax with the
 [state estimator](https://treas-secure.state.mi.us/ptestimator) or the county
-assessor before making an offer.
+assessor before making an offer, and take the after-tax output to someone who
+signs returns.

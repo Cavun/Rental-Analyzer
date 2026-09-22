@@ -138,7 +138,9 @@ _DOM_RE = re.compile(r"(\d+)\s*days?\s*on\s*market", re.IGNORECASE)
 _CSZ_RE = re.compile(r"([A-Za-z .'-]+),\s*([A-Z]{2})\s+(\d{5})")
 
 # Fields we consider important enough that their absence is worth reporting.
-CRITICAL_FIELDS = ("price", "property_tax_annual", "beds", "baths", "sqft", "year_built")
+# Property tax is deliberately NOT here: the seller's bill is reference data,
+# never an underwriting input, so a listing that omits it costs us nothing.
+CRITICAL_FIELDS = ("price", "beds", "baths", "sqft", "year_built")
 
 
 def _to_float(s: str) -> float:
