@@ -18,18 +18,50 @@ from financial_engine import UnderwritingResult
 
 PASS = "PASS"
 FAIL = "FAIL"
+OFF = "off"        # the test is switched off: reported, not screened
 WIDTH = 78
 
 
 @dataclass
 class Thresholds:
-    """Screening bar. Tighten or loosen per market."""
+    """
+    Screening bar. Tighten or loosen per market.
+
+    Each test has a number AND a switch. The switch is what decides whether
+    the test is enforced at all: a bar you are not actually underwriting to
+    should not be inflating the missed-threshold count, and a metric you do
+    not screen on is still reported, so nothing is hidden by turning one off.
+
+    Only the two tests that describe money in your pocket are on by default --
+    cash-on-cash and monthly cash flow. DSCR, cap rate and IRR are off until
+    you turn them on: they are comparison numbers first, and which of them is
+    a hard bar depends on how you are financing and how long you are holding.
+    """
 
     min_dscr: float = 1.25
     min_cap_rate: float = 0.05
     min_cash_on_cash: float = 0.08
     min_irr: float = 0.10
     min_monthly_cash_flow: float = 0.0
+
+    # The switches. Off by default except the two cash tests.
+    screen_dscr: bool = False
+    screen_cap_rate: bool = False
+    screen_cash_on_cash: bool = True
+    screen_irr: bool = False
+    screen_monthly_cash_flow: bool = True
+
+    # Wiggle room on the cash-flow test ONLY, as a share of the bar. A deal
+    # that misses the cash-flow threshold by less than this still fails --
+    # but it reads CLOSE, with the size of the gap and the levers that would
+    # close it, because "short $40/mo" and "short $400/mo" are different
+    # problems and a bare FAIL tells them apart for you.
+    #
+    # The percentage needs something to bite on: when the threshold is $0
+    # (the common case) a percentage of it is $0, so the band falls back to
+    # the same percentage of month-1 gross rent. Set 0 to turn wiggle room
+    # off and get a flat FAIL back.
+    cash_flow_wiggle_pct: float = 0.10
 
     # Off by default. The after-tax layer is reported, not screened, unless
     # you deliberately turn this on: after-tax return depends on YOUR bracket
@@ -197,13 +229,18 @@ def screen(result: UnderwritingResult,
     cap-rate-based exits.
     """
     t = thresholds or Thresholds()
-    checks = {
-        "DSCR": _check(result.dscr, t.min_dscr),
-        "Cap Rate": _check(result.cap_rate, t.min_cap_rate),
-        "Cash-on-Cash": _check(result.cash_on_cash, t.min_cash_on_cash),
-        "IRR": _check(result.irr_screened, t.min_irr),
-        "Monthly Cash Flow": _check(result.monthly_cash_flow, t.min_monthly_cash_flow),
-    }
+    checks: Dict[str, str] = {}
+    if t.screen_dscr:
+        checks["DSCR"] = _check(result.dscr, t.min_dscr)
+    if t.screen_cap_rate:
+        checks["Cap Rate"] = _check(result.cap_rate, t.min_cap_rate)
+    if t.screen_cash_on_cash:
+        checks["Cash-on-Cash"] = _check(result.cash_on_cash, t.min_cash_on_cash)
+    if t.screen_irr:
+        checks["IRR"] = _check(result.irr_screened, t.min_irr)
+    if t.screen_monthly_cash_flow:
+        checks["Monthly Cash Flow"] = _check(result.monthly_cash_flow,
+                                             t.min_monthly_cash_flow)
     if t.max_breakeven_occupancy is not None:
         checks["Breakeven Occupancy"] = _check_max(
             result.breakeven_occupancy, t.max_breakeven_occupancy)
@@ -213,12 +250,126 @@ def screen(result: UnderwritingResult,
 
 
 def verdict(checks: Dict[str, str]) -> str:
+    if not checks:
+        return ("NOT SCREENED -- every threshold is switched off; "
+                "the metrics below are reported, not judged.")
     missed = [k for k, v in checks.items() if v == FAIL]
     if not missed:
         return "PASS -- clears every screening threshold; worth a closer look."
     if len(missed) <= 2 and "DSCR" not in missed:
         return f"MARGINAL -- {len(missed)} threshold(s) missed: {', '.join(missed)}."
     return f"FAIL -- {len(missed)} threshold(s) missed: {', '.join(missed)}."
+
+
+# --------------------------------------------------------------------------
+# Wiggle room on the cash-flow test
+# --------------------------------------------------------------------------
+
+CLOSE = "CLOSE"
+
+
+@dataclass
+class CashFlowGap:
+    """How far year-1 cash flow is from the bar, and whether that is close."""
+
+    threshold: float          # dollars/month the deal had to clear
+    actual: float             # dollars/month it actually makes
+    short_by: float           # dollars/month missing (always positive)
+    band: float               # dollars/month of wiggle room allowed
+    band_basis: str           # what the wiggle percentage was applied to
+    close: bool               # short_by <= band
+
+
+def cash_flow_gap(result: UnderwritingResult,
+                  thresholds: Optional[Thresholds] = None) -> Optional[CashFlowGap]:
+    """
+    The cash-flow miss, measured -- or None when there is nothing to measure
+    (the test is switched off, or the deal clears it).
+
+    The band is a share of the threshold. A $0 threshold has no size for a
+    percentage to work on, so the band falls back to the same share of
+    month-1 gross rent: that keeps the question answerable ("how much of a
+    rent bump is this?") instead of collapsing to zero.
+    """
+    t = thresholds or Thresholds()
+    if not t.screen_monthly_cash_flow:
+        return None
+    actual = result.monthly_cash_flow
+    if actual >= t.min_monthly_cash_flow:
+        return None
+
+    share = max(0.0, t.cash_flow_wiggle_pct)
+    if abs(t.min_monthly_cash_flow) >= 1.0:
+        band = abs(t.min_monthly_cash_flow) * share
+        basis = f"{pct(share, 0)} of the {money(t.min_monthly_cash_flow)}/mo threshold"
+    else:
+        band = result.inputs.monthly_rent * share
+        basis = (f"{pct(share, 0)} of the {money(result.inputs.monthly_rent)}/mo rent, "
+                 f"since the threshold itself is {money(t.min_monthly_cash_flow)}")
+    short_by = t.min_monthly_cash_flow - actual
+    return CashFlowGap(threshold=t.min_monthly_cash_flow, actual=actual,
+                       short_by=short_by, band=band, band_basis=basis,
+                       close=short_by <= band)
+
+
+def cash_flow_levers(result: UnderwritingResult, gap: CashFlowGap) -> List[str]:
+    """
+    One line per lever that would close the gap on its own -- rent, price,
+    operating expenses. Each is the FULL move, not a share of it: they are
+    alternatives, not a plan to do all three.
+    """
+    # Imported here so the report module stays importable without re-running
+    # the underwrite machinery when nothing asks for a lever.
+    from sensitivity import price_for_cash_flow, rent_for_cash_flow
+
+    inputs = result.inputs
+    lines: List[str] = []
+
+    rent_needed = rent_for_cash_flow(inputs, gap.threshold)
+    bump = rent_needed - inputs.monthly_rent
+    if bump > 0:
+        share = bump / inputs.monthly_rent if inputs.monthly_rent else 0.0
+        lines.append(f"rent {money(inputs.monthly_rent)} -> {money(rent_needed)}/mo "
+                     f"(+{money(bump)}, +{share:.1%}) -- and only if a comp supports it")
+
+    price_needed = price_for_cash_flow(inputs, gap.threshold)
+    if price_needed is not None and price_needed < inputs.purchase_price:
+        cut = inputs.purchase_price - price_needed
+        share = cut / inputs.purchase_price if inputs.purchase_price else 0.0
+        lines.append(f"price {money(inputs.purchase_price)} -> {money(price_needed)} "
+                     f"(-{money(cut)}, -{share:.1%})")
+    elif price_needed is None:
+        lines.append("price: no offer fixes this one -- the operating numbers miss the "
+                     "bar even with the purchase price at zero")
+
+    annual = gap.short_by * 12
+    lines.append(f"operating expenses -{money(annual)}/yr ({money(gap.short_by)}/mo) -- "
+                 f"insurance shopped, management self-done, a tax appeal")
+    return lines
+
+
+def cash_flow_gap_report(result: UnderwritingResult,
+                         thresholds: Optional[Thresholds] = None) -> List[str]:
+    """The CLOSE / how-far paragraph, as report lines. Empty when it clears."""
+    gap = cash_flow_gap(result, thresholds)
+    if gap is None:
+        return []
+
+    if gap.close:
+        head = (f"{CLOSE} -- but not quite. Monthly cash flow {money(gap.actual)} is "
+                f"{money(gap.short_by)}/mo under your {money(gap.threshold)}/mo bar, "
+                f"inside the {money(gap.band)}/mo wiggle room ({gap.band_basis}).")
+    else:
+        head = (f"Monthly cash flow {money(gap.actual)} is {money(gap.short_by)}/mo under "
+                f"your {money(gap.threshold)}/mo bar -- past the {money(gap.band)}/mo "
+                f"wiggle room ({gap.band_basis}), so this is a miss, not a near miss.")
+
+    lines = ["", _wrap(head)]
+    lines.append(_wrap(f"Any ONE of these closes the {money(gap.short_by)}/mo gap:"))
+    for lever in cash_flow_levers(result, gap):
+        # Hanging indent: the bullet sits at 4, its continuation lines at 6.
+        lines.append("    - " + _wrap(lever, indent="      ")[6:])
+    return lines
 
 
 def format_report(result: UnderwritingResult,
@@ -316,14 +467,19 @@ def format_report(result: UnderwritingResult,
     # --- Screening ------------------------------------------------------
     checks = screen(result, t, after_tax)
     out.append(_header("SCREENING -- YEAR 1 (incl. lease-up)"))
+    # Every metric is listed whether or not it is screened: a switched-off
+    # test still tells you something, it just does not fail the deal. "off"
+    # in the Result column is the honest way to say so.
     rows = [
-        ["DSCR", ratio(result.dscr), f">= {t.min_dscr:.2f}", checks["DSCR"]],
-        ["Cap rate", pct(result.cap_rate), f">= {pct(t.min_cap_rate, 0)}", checks["Cap Rate"]],
-        ["Cash-on-cash", pct(result.cash_on_cash), f">= {pct(t.min_cash_on_cash, 0)}", checks["Cash-on-Cash"]],
+        ["DSCR", ratio(result.dscr), f">= {t.min_dscr:.2f}", checks.get("DSCR", OFF)],
+        ["Cap rate", pct(result.cap_rate), f">= {pct(t.min_cap_rate, 0)}",
+         checks.get("Cap Rate", OFF)],
+        ["Cash-on-cash", pct(result.cash_on_cash), f">= {pct(t.min_cash_on_cash, 0)}",
+         checks.get("Cash-on-Cash", OFF)],
         [f"IRR ({result.horizon}yr, lower exit)", pct(result.irr_screened),
-         f">= {pct(t.min_irr, 0)}", checks["IRR"]],
+         f">= {pct(t.min_irr, 0)}", checks.get("IRR", OFF)],
         ["Monthly cash flow", money(result.monthly_cash_flow),
-         f">= {money(t.min_monthly_cash_flow)}", checks["Monthly Cash Flow"]],
+         f">= {money(t.min_monthly_cash_flow)}", checks.get("Monthly Cash Flow", OFF)],
     ]
     if "Breakeven Occupancy" in checks:
         rows.append(["Breakeven occupancy", pct(result.breakeven_occupancy, 1),
@@ -332,6 +488,7 @@ def format_report(result: UnderwritingResult,
         rows.append([f"After-tax IRR ({result.horizon}yr)", pct(after_tax.irr_screened),
                      f">= {pct(t.min_after_tax_irr, 0)}", checks["After-tax IRR"]])
     out.append(render_table(["Metric", "Value", "Threshold", "Result"], rows))
+    out.extend(cash_flow_gap_report(result, t))
 
     # --- Stabilized reference -------------------------------------------
     # A deal that misses only because of lease-up is a timing problem you can
@@ -558,6 +715,10 @@ def one_line_summary(result: UnderwritingResult,
     """Row for the batch-mode comparison table."""
     checks = screen(result, thresholds)
     missed = sum(1 for v in checks.values() if v == FAIL)
+    if not checks:
+        screened = OFF
+    else:
+        screened = PASS if missed == 0 else f"{FAIL} x{missed}"
     return [
         (label or result.inputs.label or "?")[:34],
         money(result.inputs.purchase_price),
@@ -567,7 +728,7 @@ def one_line_summary(result: UnderwritingResult,
         ratio(result.dscr),
         pct(result.irr_screened, 1),
         money(result.monthly_cash_flow),
-        PASS if missed == 0 else f"{FAIL} x{missed}",
+        screened,
     ]
 
 

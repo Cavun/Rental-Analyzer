@@ -137,25 +137,66 @@ def rent_level_grid(base: PropertyInputs,
     return grid
 
 
-def breakeven_rent(base: PropertyInputs, tolerance: float = 1.0) -> float:
+def rent_for_cash_flow(base: PropertyInputs,
+                       target_monthly_cash_flow: float = 0.0,
+                       tolerance: float = 1.0) -> float:
     """
-    Lowest monthly rent at which YEAR-1 cash flow is still >= $0 -- year 1
-    includes the lease-up months, so this breakeven inherits them
-    automatically and is stricter than a stabilized breakeven would be.
+    Lowest monthly rent at which YEAR-1 cash flow still clears
+    ``target_monthly_cash_flow`` a month -- year 1 includes the lease-up
+    months, so this inherits them automatically and is stricter than a
+    stabilized figure would be.
 
     Bisection on rent; independent of the base inputs (deep-copied per run).
     The 5%-of-price upper bracket stays safe: no residential rent comes in
     at 60% of purchase price a year.
     """
+    target_annual = target_monthly_cash_flow * 12
     low, high = 0.0, base.purchase_price * 0.05
-    if underwrite(copy.deepcopy(base)).year1_cash_flow >= 0 and base.monthly_rent:
+    if (underwrite(copy.deepcopy(base)).year1_cash_flow >= target_annual
+            and base.monthly_rent):
         high = base.monthly_rent
     for _ in range(80):
         mid = (low + high) / 2
-        if _run(base, monthly_rent=mid).year1_cash_flow >= 0:
+        if _run(base, monthly_rent=mid).year1_cash_flow >= target_annual:
             high = mid
         else:
             low = mid
         if high - low < tolerance:
             break
     return high
+
+
+def breakeven_rent(base: PropertyInputs, tolerance: float = 1.0) -> float:
+    """Lowest monthly rent at which YEAR-1 cash flow is still >= $0."""
+    return rent_for_cash_flow(base, 0.0, tolerance)
+
+
+def price_for_cash_flow(base: PropertyInputs,
+                        target_monthly_cash_flow: float = 0.0,
+                        tolerance: float = 100.0,
+                        floor: float = 1000.0) -> Optional[float]:
+    """
+    Highest purchase price at which YEAR-1 cash flow still clears
+    ``target_monthly_cash_flow`` a month, or None when price is not the
+    lever -- if the operating numbers miss the target even on a house bought
+    for a thousand dollars, no offer fixes this deal.
+
+    Cash flow falls monotonically as price rises (more loan, more debt
+    service), so a plain bisection on price is safe.
+    """
+    target_annual = target_monthly_cash_flow * 12
+    high = base.purchase_price
+    if _run(base, purchase_price=high).year1_cash_flow >= target_annual:
+        return high
+    low = floor
+    if _run(base, purchase_price=low).year1_cash_flow < target_annual:
+        return None
+    for _ in range(80):
+        mid = (low + high) / 2
+        if _run(base, purchase_price=mid).year1_cash_flow >= target_annual:
+            low = mid
+        else:
+            high = mid
+        if high - low < tolerance:
+            break
+    return low

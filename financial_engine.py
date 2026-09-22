@@ -113,7 +113,7 @@ class PropertyInputs:
 
     # Growth assumptions applied year over year.
     rent_growth: float = 0.03
-    expense_growth: float = 0.025
+    expense_growth: float = 0.0125
     appreciation: float = 0.03
 
     # Exit assumptions. Both exits below are hypothetical liquidations at the

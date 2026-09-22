@@ -118,6 +118,16 @@ def analyze(blob: str,
     return listing, enriched, inputs, underwrite(inputs)
 
 
+# CLI name -> the pair of Thresholds fields it drives.
+SCREEN_SWITCHES = {
+    "dscr": "screen_dscr",
+    "cap": "screen_cap_rate",
+    "coc": "screen_cash_on_cash",
+    "irr": "screen_irr",
+    "cf": "screen_monthly_cash_flow",
+}
+
+
 def thresholds_from_args(args: argparse.Namespace) -> Thresholds:
     t = Thresholds()
     if args.min_dscr is not None:
@@ -126,6 +136,20 @@ def thresholds_from_args(args: argparse.Namespace) -> Thresholds:
         t.min_cap_rate = args.min_cap
     if args.min_coc is not None:
         t.min_cash_on_cash = args.min_coc
+    if args.min_irr is not None:
+        t.min_irr = args.min_irr
+    if args.min_cf is not None:
+        t.min_monthly_cash_flow = args.min_cf
+    if args.wiggle is not None:
+        t.cash_flow_wiggle_pct = args.wiggle
+    # --screen replaces the default set outright rather than adding to it:
+    # "screen on exactly these" is the only reading that lets you turn the
+    # two defaults OFF from the command line.
+    if args.screen is not None:
+        for switch in SCREEN_SWITCHES.values():
+            setattr(t, switch, False)
+        for name in args.screen:
+            setattr(t, SCREEN_SWITCHES[name], True)
     return t
 
 
@@ -298,6 +322,20 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--min-dscr", type=float, help="Default 1.25.")
     s.add_argument("--min-cap", type=float, help="Default 0.05.")
     s.add_argument("--min-coc", type=float, help="Default 0.08.")
+    s.add_argument("--min-irr", type=float, help="Default 0.10.")
+    s.add_argument("--min-cf", type=float, metavar="DOLLARS",
+                   help="Minimum year-1 monthly cash flow, lease-up included "
+                        "(default 0). Negative allows a deal you are willing to feed.")
+    s.add_argument("--screen", nargs="+", choices=sorted(SCREEN_SWITCHES),
+                   metavar="METRIC",
+                   help="Screen on exactly these metrics and no others: "
+                        + ", ".join(sorted(SCREEN_SWITCHES))
+                        + ". Default is coc and cf; the rest are reported, not screened.")
+    s.add_argument("--wiggle", type=float, metavar="SHARE",
+                   help="Wiggle room on the cash-flow test as a decimal share of the "
+                        "bar (default 0.10). A miss inside it reads CLOSE, with the "
+                        "rent, price and expense moves that would close the gap. "
+                        "0 turns it off.")
     return p
 
 

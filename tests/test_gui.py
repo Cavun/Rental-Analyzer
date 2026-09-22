@@ -245,9 +245,11 @@ class TestAfterTaxTab(GUITestCase):
         self.app.underwrite()
         self.assertAlmostEqual(self.app.after_tax.assumptions.ordinary_rate, 0.2775)
 
-    def test_after_tax_is_not_screened_unless_the_box_is_filled(self):
+    def test_after_tax_is_not_screened_unless_the_box_is_ticked(self):
         self.load_and_fill()
+        # The number is there on a fresh form; the tick is what turns it on.
         self.assertIsNone(self.app.thresholds_from_fields().min_after_tax_irr)
+        self.app.f_min_at_irr.set_on(True)
         self.app.f_min_at_irr.var.set("6")
         self.assertAlmostEqual(self.app.thresholds_from_fields().min_after_tax_irr, 0.06)
 
@@ -273,6 +275,58 @@ class TestThresholdsAreAllExposed(GUITestCase):
         for field in dataclasses.fields(Thresholds):
             self.assertEqual(getattr(from_form, field.name), getattr(defaults, field.name),
                              f"{field.name} is not wired to the form")
+
+    def test_only_the_two_cash_tests_are_ticked_on_a_fresh_form(self):
+        for widget in (self.app.f_min_coc, self.app.f_min_cf):
+            self.assertTrue(widget.is_on())
+        for widget in (self.app.f_min_dscr, self.app.f_min_cap, self.app.f_min_irr,
+                       self.app.f_min_at_irr, self.app.f_max_be_occ):
+            self.assertFalse(widget.is_on())
+
+    def test_ticking_a_box_adds_that_check(self):
+        from report import screen
+        self.load_and_fill()
+        self.assertNotIn("DSCR", screen(self.app.result, self.app.thresholds_from_fields()))
+        self.app.f_min_dscr.set_on(True)
+        self.assertIn("DSCR", screen(self.app.result, self.app.thresholds_from_fields()))
+
+    def test_unticking_a_box_drops_that_check(self):
+        from report import screen
+        self.load_and_fill()
+        self.app.f_min_cf.set_on(False)
+        checks = screen(self.app.result, self.app.thresholds_from_fields())
+        self.assertNotIn("Monthly Cash Flow", checks)
+        # The number itself survives being switched off, so it comes back
+        # unchanged when you tick the box again.
+        self.assertEqual(self.app.thresholds_from_fields().min_monthly_cash_flow, 0.0)
+
+    def test_the_entry_greys_out_while_its_box_is_unticked(self):
+        self.assertEqual(str(self.app.f_min_dscr.entry.cget("state")), "disabled")
+        self.app.f_min_dscr.set_on(True)
+        self.assertEqual(str(self.app.f_min_dscr.entry.cget("state")), "normal")
+
+    def test_breakeven_occupancy_screens_once_ticked(self):
+        from report import screen
+        self.load_and_fill()
+        self.app.f_max_be_occ.set_on(True)
+        self.app.f_max_be_occ.var.set("85")
+        checks = screen(self.app.result, self.app.thresholds_from_fields())
+        self.assertEqual(checks["Breakeven Occupancy"], "FAIL")
+
+    def test_wiggle_box_drives_the_band(self):
+        from report import cash_flow_gap
+        self.load_and_fill()
+        gap = cash_flow_gap(self.app.result, self.app.thresholds_from_fields())
+        self.assertTrue(gap.close)
+        self.app.f_cf_wiggle.var.set("0")
+        gap = cash_flow_gap(self.app.result, self.app.thresholds_from_fields())
+        self.assertEqual(gap.band, 0.0)
+        self.assertFalse(gap.close)
+
+    def test_a_close_miss_reaches_the_banner_and_the_report(self):
+        self.load_and_fill()
+        self.assertIn("CLOSE on cash flow", self.app.verdict_label.cget("text"))
+        self.assertIn("wiggle room", self.app.txt_report.get("1.0", "end"))
 
     def test_cash_flow_box_changes_the_screen(self):
         from report import screen

@@ -50,6 +50,7 @@ from financial_engine import (
 from report import (
     BATCH_HEADERS,
     Thresholds,
+    cash_flow_gap,
     format_after_tax,
     format_report,
     money,
@@ -97,9 +98,19 @@ class LabeledEntry:
     """One label + entry cell in a grid, with tolerant get/set."""
 
     def __init__(self, parent: tk.Widget, row: int, col: int, label: str,
-                 width: int = 12, suffix: str = "", tooltip: str = "", wide: bool = False):
+                 width: int = 12, suffix: str = "", tooltip: str = "", wide: bool = False,
+                 toggle: Optional[bool] = None):
         self.var = tk.StringVar()
-        label_widget = ttk.Label(parent, text=label)
+        # With toggle=, the label IS a checkbox: it says whether this number
+        # is enforced at all. The box greys out when it is off, so an
+        # unscreened bar can never be mistaken for one that is being applied.
+        self.enabled: Optional[tk.BooleanVar] = None
+        if toggle is None:
+            label_widget = ttk.Label(parent, text=label)
+        else:
+            self.enabled = tk.BooleanVar(value=toggle)
+            label_widget = ttk.Checkbutton(parent, text=label, variable=self.enabled,
+                                           command=self._sync_state)
         label_widget.grid(row=row, column=col * 3, sticky="w", padx=(6, 4), pady=2)
         justify = "left" if wide else "right"
         self.entry = ttk.Entry(parent, textvariable=self.var, width=width, justify=justify)
@@ -116,6 +127,22 @@ class LabeledEntry:
         if tooltip:
             Tooltip(self.entry, tooltip)
             Tooltip(label_widget, tooltip)
+        self._sync_state()
+
+    def _sync_state(self) -> None:
+        """Grey the entry while its switch is off."""
+        if self.enabled is None:
+            return
+        self.entry.configure(state="normal" if self.enabled.get() else "disabled")
+
+    def is_on(self) -> bool:
+        """True when this field is switched on (always, if it has no switch)."""
+        return True if self.enabled is None else bool(self.enabled.get())
+
+    def set_on(self, on: bool) -> None:
+        if self.enabled is not None:
+            self.enabled.set(bool(on))
+            self._sync_state()
 
     def get(self, default: Optional[float] = None) -> Optional[float]:
         return parse_number(self.var.get(), default)
@@ -417,22 +444,51 @@ class RentalAnalyzerGUI(ttk.Frame):
                 "full at sale.")
 
         # --- Thresholds -----------------------------------------------
-        thr = self._section(holder, "Screening thresholds")
-        self.f_min_dscr = LabeledEntry(thr, 0, 0, "Min DSCR")
-        self.f_min_cap = LabeledEntry(thr, 0, 1, "Min cap rate", suffix="%")
-        self.f_min_coc = LabeledEntry(thr, 1, 0, "Min cash-on-cash", suffix="%")
-        self.f_min_irr = LabeledEntry(thr, 1, 1, "Min IRR", suffix="%")
+        # Every bar has a tick box. Ticked = enforced; unticked = the metric is
+        # still computed and reported, it just cannot fail the deal. Only the
+        # two cash tests start ticked (see report.Thresholds).
+        thr = self._section(holder, "Screening thresholds (tick the ones to enforce)")
+        self.f_min_dscr = LabeledEntry(
+            thr, 0, 0, "Min DSCR", toggle=False,
+            tooltip="NOI / debt service in year 1. Off by default: it is the lender's "
+                    "test, and how much it matters depends on your financing.")
+        self.f_min_cap = LabeledEntry(
+            thr, 0, 1, "Min cap rate", suffix="%", toggle=False,
+            tooltip="Off by default: a cap rate compares this deal to the market, it "
+                    "does not tell you whether YOU can carry it.")
+        self.f_min_coc = LabeledEntry(
+            thr, 1, 0, "Min cash-on-cash", suffix="%", toggle=True,
+            tooltip="On by default. Year-1 cash flow over cash invested -- what your "
+                    "money actually earns in year one.")
+        self.f_min_irr = LabeledEntry(
+            thr, 1, 1, "Min IRR", suffix="%", toggle=False,
+            tooltip="Off by default: IRR leans on an exit you have not made yet, at "
+                    "assumptions (appreciation, exit cap) you typed in.")
         self.f_min_cf = LabeledEntry(
-            thr, 2, 0, "Min monthly CF", suffix="$",
-            tooltip="Year-1 cash flow after debt service, lease-up included. 0 means "
-                    "the deal may not cost you money every month. Set it negative to "
-                    "allow a deal you are willing to feed through its first year.")
+            thr, 2, 0, "Min monthly CF", suffix="$", toggle=True,
+            tooltip="On by default. Year-1 cash flow after debt service, lease-up "
+                    "included. 0 means the deal may not cost you money every month. "
+                    "Set it negative to allow a deal you are willing to feed through "
+                    "its first year.")
         self.f_min_at_irr = LabeledEntry(
-            thr, 2, 1, "Min after-tax IRR", suffix="%",
-            tooltip="Optional and OFF by default -- leave it blank. After-tax return "
-                    "depends on your bracket and your other passive income, so it is "
-                    "a personal number, not a property number. Fill it in to screen "
-                    "on it anyway.")
+            thr, 2, 1, "Min after-tax IRR", suffix="%", toggle=False,
+            tooltip="Off by default. After-tax return depends on your bracket and "
+                    "your other passive income, so it is a personal number, not a "
+                    "property number. Tick it to screen on it anyway.")
+        self.f_max_be_occ = LabeledEntry(
+            thr, 3, 0, "Max breakeven occ", suffix="%", toggle=False,
+            tooltip="Off by default, and not an independent test: breakeven occupancy "
+                    "<= assumed occupancy is the same condition as cash flow >= 0, so "
+                    "ticking it double-counts one failure. The honest use is as a "
+                    "STRESS test -- 85% with a 1-month vacancy assumption means 'must "
+                    "still cash flow if vacancy doubles'.")
+        self.f_cf_wiggle = LabeledEntry(
+            thr, 3, 1, "CF wiggle room", suffix="%",
+            tooltip="Wiggle room on the monthly cash-flow test only. A deal that "
+                    "misses the cash-flow bar by less than this still fails, but the "
+                    "report says CLOSE and lists the rent, price and expense moves "
+                    "that would close the gap. Measured against the bar; when the bar "
+                    "is $0 it falls back to this share of gross rent. 0 turns it off.")
 
         self.reset_fields(keep_listing=False)
 
@@ -684,25 +740,36 @@ class RentalAnalyzerGUI(ttk.Frame):
                            if self.f_exit_cap.get() else None),
             expenses=expenses,
             rent_growth=(self.f_rent_growth.get(3.0) or 0.0) / 100,
-            expense_growth=(self.f_exp_growth.get(2.5) or 0.0) / 100,
+            expense_growth=(self.f_exp_growth.get(1.25) or 0.0) / 100,
             appreciation=(self.f_appreciation.get(3.0) or 0.0) / 100,
             label=self.f_address.get_text(),
         )
 
     def thresholds_from_fields(self) -> Thresholds:
+        # The number in a box is always read, ticked or not, so a bar you
+        # switch off and back on comes back as you left it. The tick is what
+        # decides whether screen() enforces it.
         return Thresholds(
             min_dscr=self.f_min_dscr.get(1.25) or 0.0,
             min_cap_rate=(self.f_min_cap.get(5.0) or 0.0) / 100,
             min_cash_on_cash=(self.f_min_coc.get(8.0) or 0.0) / 100,
             min_irr=(self.f_min_irr.get(10.0) or 0.0) / 100,
             min_monthly_cash_flow=self.f_min_cf.get(0.0) or 0.0,
-            # Blank box == not screened, which is the default.
+            screen_dscr=self.f_min_dscr.is_on(),
+            screen_cap_rate=self.f_min_cap.is_on(),
+            screen_cash_on_cash=self.f_min_coc.is_on(),
+            screen_irr=self.f_min_irr.is_on(),
+            screen_monthly_cash_flow=self.f_min_cf.is_on(),
+            cash_flow_wiggle_pct=(self.f_cf_wiggle.get(10.0) or 0.0) / 100,
+            # These two are screened only when ticked AND filled in: for them
+            # the value carries the switch downstream (see report.Thresholds),
+            # so an unticked box has to arrive as None.
             min_after_tax_irr=((self.f_min_at_irr.get() / 100)
-                               if self.f_min_at_irr.get() is not None else None),
-            # max_breakeven_occupancy is deliberately left unset: vacancy is
-            # already deducted in every metric, so screening on breakeven
-            # occupancy would flag the same weakness twice. It is reported as
-            # a reference number instead (see report.Thresholds).
+                               if (self.f_min_at_irr.is_on()
+                                   and self.f_min_at_irr.get() is not None) else None),
+            max_breakeven_occupancy=((self.f_max_be_occ.get() / 100)
+                                     if (self.f_max_be_occ.is_on()
+                                         and self.f_max_be_occ.get() is not None) else None),
         )
 
     # --- Actions --------------------------------------------------------
@@ -777,8 +844,15 @@ class RentalAnalyzerGUI(ttk.Frame):
     def _update_banner(self, result: UnderwritingResult, thresholds: Thresholds) -> None:
         checks = screen(result, thresholds, self.after_tax)
         text = verdict(checks)
+        # A cash-flow miss inside the wiggle room says so on the headline: the
+        # difference between "short $40/mo" and "short $400/mo" is the whole
+        # question of whether the deal is worth reworking.
+        gap = cash_flow_gap(result, thresholds)
+        if gap is not None and gap.close:
+            text += (f"  CLOSE on cash flow: {money(gap.short_by)}/mo short of "
+                     f"{money(gap.threshold)}/mo -- see the report for what closes it.")
         color = OK_COLOR if text.startswith("PASS") else (
-            WARN_COLOR if text.startswith("MARGINAL") else BAD_COLOR)
+            WARN_COLOR if text.startswith(("MARGINAL", "NOT SCREENED")) else BAD_COLOR)
         self.verdict_label.configure(text=text, foreground=color)
         chips = "Year 1 (incl. lease-up):   " + "   ".join([
             f"Cap {result.cap_rate * 100:5.2f}%",
@@ -970,17 +1044,24 @@ class RentalAnalyzerGUI(ttk.Frame):
         defaults: Dict[LabeledEntry, str] = {
             self.f_down: "20", self.f_rate: "7.0", self.f_term: "30", self.f_closing: "3.0",
             self.f_capex0: "2,500", self.f_hold: "30", self.f_vacancy: "8.33",
-            self.f_rent_growth: "3.0", self.f_exp_growth: "2.5", self.f_appreciation: "3.0",
+            self.f_rent_growth: "3.0", self.f_exp_growth: "1.25", self.f_appreciation: "3.0",
             self.f_lease_up: "1", self.f_repair_bump: "0", self.f_exit_cap: "",
             self.f_mgmt: "0", self.f_maint: "8", self.f_capex: "8", self.f_other: "0",
             self.f_building_share: "80", self.f_fed_rate: "22", self.f_state_rate: "4.25",
             self.f_city_rate: "0", self.f_ltcg_rate: "15", self.f_recapture_rate: "25",
             self.f_magi: "",
             self.f_min_dscr: "1.25", self.f_min_cap: "5.0", self.f_min_coc: "8.0",
-            self.f_min_irr: "10.0", self.f_min_cf: "0", self.f_min_at_irr: "",
+            self.f_min_irr: "10.0", self.f_min_cf: "0", self.f_min_at_irr: "6.0",
+            self.f_max_be_occ: "85", self.f_cf_wiggle: "10",
         }
         for widget, value in defaults.items():
             widget.var.set(value)
+        # Which bars are enforced on a fresh form: the two cash tests only.
+        for widget, on in ((self.f_min_dscr, False), (self.f_min_cap, False),
+                           (self.f_min_coc, True), (self.f_min_irr, False),
+                           (self.f_min_cf, True), (self.f_min_at_irr, False),
+                           (self.f_max_be_occ, False)):
+            widget.set_on(on)
         self.v_niit.set(False)
         self.v_passive_usable.set(True)
         if not keep_listing:

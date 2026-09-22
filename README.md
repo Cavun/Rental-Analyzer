@@ -111,7 +111,7 @@ Fixed for every listing so deals stay comparable (all in
 | Exit cap rate | Year-1 cap rate + 0.50% |
 | Hold period | Forever — projected over the full 30-year loan term |
 | Management / maintenance / capex reserve | 0% (self-managed) / 8% / 8% of effective gross income |
-| Rent growth / expense growth / appreciation | 3% / 2.5% / 3% |
+| Rent growth / expense growth / appreciation | 3% / 1.25% / 3% |
 
 ## Four things this gets right that a naive read does not
 
@@ -206,23 +206,44 @@ the range for a genuine forever hold.
 
 ## Screening thresholds
 
-Defaults (tunable via `report.Thresholds` or the `--min-*` flags):
+Every threshold has a **number and a switch**. The switch decides whether the
+test is enforced at all; an unswitched metric is still computed and printed,
+it just cannot fail the deal (its Result column reads `off`). A bar you are
+not actually underwriting to should not be inflating the missed-threshold
+count.
 
-| Metric | Bar |
-|---|---|
-| DSCR | ≥ 1.25 |
-| Cap rate | ≥ 5% |
-| Cash-on-cash | ≥ 8% |
-| IRR (lower of the two exits) | ≥ 10% |
-| Monthly cash flow | ≥ $0 |
-| After-tax IRR | off by default |
+| Metric | Bar | On by default? |
+|---|---|---|
+| DSCR | ≥ 1.25 | no |
+| Cap rate | ≥ 5% | no |
+| Cash-on-cash | ≥ 8% | **yes** |
+| IRR (lower of the two exits) | ≥ 10% | no |
+| Monthly cash flow | ≥ $0 | **yes** |
+| After-tax IRR | ≥ 6% | no |
+| Breakeven occupancy | ≤ 85% | no |
 
-All of these are **year 1, lease-up included**. Every threshold has a box in
-the GUI; the CLI exposes the first three as `--min-*` flags and takes the
-rest from `report.Thresholds`.
+Only the two tests that describe money in your pocket start on. DSCR, cap
+rate and IRR are comparison numbers first: which of them is a hard bar
+depends on how you are financing and how long you are holding, so you switch
+them on deliberately.
+
+All of these are **year 1, lease-up included**. In the GUI every bar is a
+tick box beside its number (the number stays put when you untick it, so a bar
+you switch off and back on comes back as you left it). On the CLI:
+
+```bash
+python3 main.py listing.html --screen coc cf dscr    # screen on exactly these
+python3 main.py listing.html --screen cf             # cash flow and nothing else
+python3 main.py listing.html --min-irr 0.12 --screen irr coc
+```
+
+`--screen` replaces the default set outright rather than adding to it, which
+is the only reading that lets you turn the two defaults off from a command
+line. With every test switched off the verdict reads **NOT SCREENED** rather
+than PASS — nothing was judged, so nothing passed.
 
 **After-tax IRR is reported, not screened,** unless you set
-`Thresholds.min_after_tax_irr` or fill the GUI box. It depends on your
+`Thresholds.min_after_tax_irr` or tick the GUI box. It depends on your
 bracket and your other passive income, so it is a personal number rather
 than a property one.
 
@@ -235,6 +256,39 @@ as a reference figure, because it answers something the other numbers do not
 use it as a genuine stress test, set `Thresholds.max_breakeven_occupancy`
 *tighter* than your assumed occupancy (e.g. 0.85 with a 1-month vacancy
 assumption: "does this still work if vacancy doubles?").
+
+### Wiggle room on cash flow
+
+A cash-flow miss of $40/mo and a miss of $400/mo are different problems, and a
+bare FAIL does not tell them apart. `Thresholds.cash_flow_wiggle_pct`
+(default 10%, the **CF wiggle room** box in the GUI, `--wiggle` on the CLI)
+sets a band below the cash-flow bar. A deal that lands inside it still FAILS
+the screen — wiggle room explains a miss, it never forgives one — but the
+report says so in words:
+
+```
+  CLOSE -- but not quite. Monthly cash flow -$172 is $172/mo under your $0/mo
+  bar, inside the $240/mo wiggle room (10% of the $2,400/mo rent, since the
+  threshold itself is $0).
+  Any ONE of these closes the $172/mo gap:
+    - rent $2,400 -> $2,646/mo (+$246, +10.2%) -- and only if a comp supports it
+    - price $239,900 -> $207,588 (-$32,312, -13.5%)
+    - operating expenses -$2,062/yr ($172/mo) -- insurance shopped,
+      management self-done, a tax appeal
+```
+
+Each lever is the FULL move on its own — they are alternatives, not a plan to
+do all three — and each is solved against the real engine by bisection
+(`sensitivity.rent_for_cash_flow`, `sensitivity.price_for_cash_flow`), not
+estimated from a derivative. When the operating numbers miss the bar even at
+a purchase price of zero, the price line says so instead of printing a
+nonsense offer.
+
+The percentage needs something to bite on: it is measured against the bar,
+and because the bar is usually $0 (where a percentage of it is also $0) it
+falls back to the same percentage of month-1 gross rent. A miss past the band
+prints the same levers under a blunter headline. Set the percentage to 0 to
+turn the whole thing off and get a flat FAIL back.
 
 Verdicts: **PASS** (clears every threshold — worth a closer look) ·
 **MARGINAL** (one or two misses, DSCR intact) · **FAIL** (anything worse, or
