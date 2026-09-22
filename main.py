@@ -70,7 +70,7 @@ def analyze(blob: str,
     if not listing.price:
         raise SystemExit(
             "Could not find a price in that listing. If this is a non-flexmls page, "
-            "pass --price to underwrite it anyway."
+            "supply --price to underwrite it anyway."
         )
 
     assumptions = EnrichmentAssumptions()
@@ -224,7 +224,7 @@ def print_batch(blobs: List[Tuple[str, str]], args: argparse.Namespace) -> None:
     print()
     print(render_table(BATCH_HEADERS, rows, title=f"BATCH SCREEN -- {len(rows)} listing(s)"))
     print()
-    print("  Screen column: PASS = clears every threshold; FLAG xN = N thresholds missed.")
+    print("  Screen column: PASS = clears every threshold; FAIL xN = N thresholds missed.")
     print("  Re-run a single listing without other files for the full report.")
     if failures:
         print()
@@ -280,8 +280,11 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--term", type=int, help="Loan term in years (default 30).")
     g.add_argument("--closing", type=float, help="Closing costs as a share of price (default 0.03).")
     g.add_argument("--capex", type=float,
-                   help="Make-ready / rehab dollars. Default is $2,500 or 1% of price, "
-                        "whichever is higher -- pass 0 for a genuinely turn-key unit.")
+                   help="One-time make-ready / rehab dollars spent BEFORE the first "
+                        "tenant. Capital, not an operating expense: it lands in cash "
+                        "invested and in the cap-rate basis, never in NOI. Default is "
+                        "$2,500 or 1% of price, whichever is higher -- set 0 for a "
+                        "genuinely turn-key unit.")
     g.add_argument("--lease-up", type=float, metavar="MONTHS",
                    help="Months of vacancy in YEAR 1 only, on top of the steady-state "
                         "vacancy rate (default 1).")
@@ -318,7 +321,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if not args.sources:
         print("No listing supplied -- running the built-in sample listing.\n"
-              "(Pass a saved listing page: python3 main.py my_listing.html)\n", file=sys.stderr)
+              "(Point it at a saved listing page: python3 main.py my_listing.html)\n", file=sys.stderr)
         print_single(SAMPLE_LISTING_HTML, args)
         return 0
 

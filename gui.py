@@ -235,15 +235,53 @@ class RentalAnalyzerGUI(ttk.Frame):
             frame.columnconfigure(col, weight=1)
         return frame
 
+    @staticmethod
+    def _bind_mousewheel(canvas: tk.Canvas, *extra: tk.Widget) -> None:
+        """
+        Wheel scrolling over the input panel.
+
+        Tk delivers a wheel event to the widget under the pointer, which in a
+        scrolled canvas is almost always an entry or a label inside it, never
+        the canvas -- so binding the canvas alone scrolls nothing. Bind once at
+        the application level and scroll only when the pointer is over this
+        canvas or one of its children; every other widget (the report panes,
+        the comparison tree) keeps its own wheel behaviour.
+        """
+        owners = (str(canvas),) + tuple(str(w) for w in extra)
+
+        def _scroll(event):
+            path = str(event.widget)
+            if not any(path == own or path.startswith(own + ".") for own in owners):
+                return None
+            if canvas.yview() == (0.0, 1.0):        # nothing to scroll
+                return "break"
+            if event.num == 4:                      # X11 wheel up
+                delta = -1
+            elif event.num == 5:                    # X11 wheel down
+                delta = 1
+            elif abs(event.delta) >= 120:           # Windows: multiples of 120
+                delta = -int(event.delta / 120)
+            else:                                   # macOS: small raw deltas
+                delta = -1 if event.delta > 0 else 1
+            canvas.yview_scroll(delta, "units")
+            return "break"
+
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            canvas.bind_all(sequence, _scroll, add="+")
+
     def _build_inputs(self, parent: tk.Widget) -> None:
         canvas = tk.Canvas(parent, borderwidth=0, highlightthickness=0, width=560)
         scroll = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
         holder = ttk.Frame(canvas)
         holder.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=holder, anchor="nw")
+        window = canvas.create_window((0, 0), window=holder, anchor="nw")
+        # Keep the inner frame as wide as the canvas so the sections fill the
+        # panel instead of hugging their natural width.
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
         canvas.configure(yscrollcommand=scroll.set)
         canvas.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
+        self._bind_mousewheel(canvas, scroll)
 
         # --- Property -------------------------------------------------
         prop = self._section(holder, "Property (edit anything the parser got wrong)")
@@ -290,10 +328,6 @@ class RentalAnalyzerGUI(ttk.Frame):
             tooltip="YEAR 1 ONLY: months between closing and a paying tenant, on top "
                     "of the steady-state vacancy rate. Years 2+ are unaffected. "
                     "0-11, and total year-1 vacancy must stay under 12 months.")
-        self.f_repair_bump = LabeledEntry(
-            income, 2, 1, "Yr-1 repair bump", suffix="% EGI",
-            tooltip="Optional extra repair load in year 1 only -- the punch list a new "
-                    "owner always finds. 0 leaves lease-up as the only year-1 penalty.")
 
         # --- Financing ------------------------------------------------
         fin = self._section(holder, "Financing")
@@ -303,11 +337,14 @@ class RentalAnalyzerGUI(ttk.Frame):
         self.f_closing = LabeledEntry(fin, 1, 1, "Closing costs", suffix="%")
         self.f_capex0 = LabeledEntry(
             fin, 2, 0, "Initial make-ready / rehab", width=14, suffix="$",
-            tooltip="Defaults to $2,500 or 1% of price, whichever is HIGHER. No "
-                    "property goes from someone else's house to a rentable unit for "
-                    "free -- locks, paint, cleaning, the one appliance that died. "
-                    "Set it to 0 only for a genuinely turn-key unit. Counts in total "
-                    "cash invested and in the cap-rate basis.")
+            tooltip="CAPITAL, not an expense: one-time dollars spent BEFORE the first "
+                    "tenant -- locks, paint, cleaning, the one appliance that died. It "
+                    "comes out of your pocket at closing, so it lands in total cash "
+                    "invested and in the cap-rate basis; it never touches NOI. "
+                    "Defaults to $2,500 or 1% of price, whichever is HIGHER; set it to "
+                    "0 only for a genuinely turn-key unit. Not the same box as 'Yr-1 "
+                    "extra repairs' under Operating expenses, which is the running "
+                    "repair load AFTER move-in.")
         self.f_hold = LabeledEntry(fin, 2, 1, "Projection", suffix="yrs",
                                    tooltip="A forever hold is modeled over the full loan term.")
         self.f_exit_cap = LabeledEntry(
@@ -323,6 +360,14 @@ class RentalAnalyzerGUI(ttk.Frame):
         self.f_mgmt = LabeledEntry(ops, 1, 0, "Management", suffix="% EGI")
         self.f_maint = LabeledEntry(ops, 1, 1, "Maintenance", suffix="% EGI")
         self.f_capex = LabeledEntry(ops, 2, 0, "Capex reserve", suffix="% EGI")
+        self.f_repair_bump = LabeledEntry(
+            ops, 3, 0, "Yr-1 extra repairs", suffix="% EGI",
+            tooltip="OPERATING EXPENSE, year 1 only: maintenance runs hotter than the "
+                    "steady-state % above while a new owner works through the punch "
+                    "list the tenant finds after move-in. Added on top of Maintenance "
+                    "for year 1, then drops away. 0 by default -- leave it at 0 unless "
+                    "you want a year-1 repair penalty ON TOP of the one-time make-ready "
+                    "under Financing, which covers the pre-tenant work.")
         self.f_other = LabeledEntry(
             ops, 2, 1, "Other fixed", suffix="$/yr",
             tooltip="Landlord-paid utilities, lawn/snow, rental certification. $0 by "
@@ -431,7 +476,7 @@ class RentalAnalyzerGUI(ttk.Frame):
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
         text.tag_configure("pass", foreground=OK_COLOR)
-        text.tag_configure("flag", foreground=BAD_COLOR)
+        text.tag_configure("fail", foreground=BAD_COLOR)
         return text
 
     def _build_comparison_tab(self) -> None:
@@ -452,7 +497,7 @@ class RentalAnalyzerGUI(ttk.Frame):
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
         self.tree.tag_configure("pass", foreground=OK_COLOR)
-        self.tree.tag_configure("flag", foreground=BAD_COLOR)
+        self.tree.tag_configure("fail", foreground=BAD_COLOR)
 
         buttons = ttk.Frame(frame)
         buttons.grid(row=2, column=0, columnspan=2, sticky="w", pady=4)
@@ -466,8 +511,8 @@ class RentalAnalyzerGUI(ttk.Frame):
         widget.configure(state="normal")
         widget.delete("1.0", "end")
         widget.insert("1.0", content)
-        # Colour the PASS/FLAG markers so the eye lands on them first.
-        for marker, tag in (("PASS", "pass"), ("FLAG", "flag")):
+        # Colour the PASS/FAIL markers so the eye lands on them first.
+        for marker, tag in (("PASS", "pass"), ("FAIL", "fail")):
             start = "1.0"
             while True:
                 pos = widget.search(marker, start, stopindex="end")
@@ -732,7 +777,7 @@ class RentalAnalyzerGUI(ttk.Frame):
     def _update_banner(self, result: UnderwritingResult, thresholds: Thresholds) -> None:
         checks = screen(result, thresholds, self.after_tax)
         text = verdict(checks)
-        color = OK_COLOR if text.startswith("INVESTIGATE") else (
+        color = OK_COLOR if text.startswith("PASS") else (
             WARN_COLOR if text.startswith("MARGINAL") else BAD_COLOR)
         self.verdict_label.configure(text=text, foreground=color)
         chips = "Year 1 (incl. lease-up):   " + "   ".join([
@@ -795,7 +840,7 @@ class RentalAnalyzerGUI(ttk.Frame):
         row = one_line_summary(self.result, self.thresholds_from_fields(), label)
         # IRR in this row is the SCREENED IRR (the lower of the two exits),
         # matching the screening table -- see report.one_line_summary.
-        tag = "pass" if row[-1] == "PASS" else "flag"
+        tag = "pass" if row[-1] == "PASS" else "fail"
         self.tree.insert("", "end", values=row, tags=(tag,))
         self.comparison.append((label, row))
         self.tabs.select(4)

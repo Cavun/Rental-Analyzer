@@ -90,7 +90,11 @@ class PropertyInputs:
     interest_rate: float = INTEREST_RATE
     loan_term_years: int = LOAN_TERM_YEARS
     closing_cost_pct: float = CLOSING_COST_PCT
-    initial_capex: float = INITIAL_CAPEX   # make-ready / rehab before first tenant
+    # Make-ready / rehab BEFORE the first tenant. Capital, not an operating
+    # expense: it lands in total cash invested and in the cap-rate basis and
+    # never touches NOI. Distinct from year1_repair_bump_pct below, which is
+    # the running repair load AFTER move-in.
+    initial_capex: float = INITIAL_CAPEX
     vacancy_rate: float = VACANCY_RATE
     hold_years: int = HOLD_YEARS
 
@@ -100,9 +104,11 @@ class PropertyInputs:
     # Extra vacancy in year 1 only, on top of the steady-state rate: the
     # months between closing and a paying tenant. Years 2+ are unaffected.
     lease_up_months: float = LEASE_UP_MONTHS
-    # Optional extra repair load in year 1 only, as a share of EGI (the
-    # punch list a new owner always finds). 0 keeps lease-up as the only
-    # year-1 penalty.
+    # Optional extra repair load in year 1 only, as a share of EGI: an
+    # OPERATING expense on top of the steady-state maintenance percentage,
+    # for the punch list the tenant finds after move-in. It is not a second
+    # helping of initial_capex -- that one is pre-tenant capital and is spent
+    # before this ever applies. 0 keeps lease-up as the only year-1 penalty.
     year1_repair_bump_pct: float = 0.0
 
     # Growth assumptions applied year over year.

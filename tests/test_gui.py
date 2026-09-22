@@ -278,7 +278,7 @@ class TestThresholdsAreAllExposed(GUITestCase):
         from report import screen
         self.load_and_fill()
         checks = screen(self.app.result, self.app.thresholds_from_fields())
-        self.assertEqual(checks["Monthly Cash Flow"], "FLAG")
+        self.assertEqual(checks["Monthly Cash Flow"], "FAIL")
         # A landlord willing to feed the deal $300/mo through year 1.
         self.app.f_min_cf.var.set("-300")
         checks = screen(self.app.result, self.app.thresholds_from_fields())
@@ -290,6 +290,79 @@ class TestThresholdsAreAllExposed(GUITestCase):
         self.assertNotIn("Breakeven Occupancy", screen(self.app.result,
                                                        self.app.thresholds_from_fields()))
         self.assertIn("Breakeven occ", self.app.metrics_label.cget("text"))
+
+
+@unittest.skipUnless(HAS_TK and HAS_DISPLAY, "needs tkinter and a display")
+class TestInputPanelScrolling(GUITestCase):
+    """The left panel must scroll on the wheel, not only on the scrollbar."""
+
+    def _canvas(self):
+        import tkinter as tk
+        found = []
+
+        def walk(widget):
+            for child in widget.winfo_children():
+                if isinstance(child, tk.Canvas):
+                    found.append(child)
+                walk(child)
+
+        walk(self.root)
+        self.assertTrue(found, "input panel canvas not found")
+        return found[0]
+
+    def test_wheel_over_a_child_entry_scrolls_the_panel(self):
+        """The pointer sits over an entry, never the canvas -- bind accordingly."""
+        self.root.geometry("1200x400")
+        self.root.update()
+        canvas = self._canvas()
+        start = canvas.yview()
+        for _ in range(3):                      # X11 wheel-down
+            self.app.f_rent.entry.event_generate("<Button-5>")
+        self.root.update()
+        self.assertGreater(canvas.yview()[0], start[0])
+        for _ in range(3):                      # and back up
+            self.app.f_rent.entry.event_generate("<Button-4>")
+        self.root.update()
+        self.assertAlmostEqual(canvas.yview()[0], start[0], places=6)
+
+    def test_wheel_over_the_report_pane_leaves_the_panel_alone(self):
+        self.root.geometry("1200x400")
+        self.root.update()
+        canvas = self._canvas()
+        before = canvas.yview()
+        self.app.txt_report.event_generate("<Button-5>")
+        self.root.update()
+        self.assertEqual(canvas.yview(), before)
+
+
+@unittest.skipUnless(HAS_TK and HAS_DISPLAY, "needs tkinter and a display")
+class TestRepairBumpIsAnOperatingExpense(GUITestCase):
+    """It is an opex bump, not a second make-ready, and it sits with the opex."""
+
+    def test_repair_bump_lives_in_the_operating_expenses_section(self):
+        section = self.app.f_repair_bump.entry.master
+        self.assertEqual(section.cget("text"), "Operating expenses")
+
+    def test_make_ready_and_repair_bump_move_different_numbers(self):
+        """Make-ready is cash in; the bump is year-1 NOI. Neither is the other."""
+        self.load_and_fill()
+        base = self.app.result
+
+        self.app.f_capex0.var.set(str(base.inputs.initial_capex + 10000))
+        self.app.underwrite()
+        capex = self.app.result
+        self.assertGreater(capex.total_cash_invested, base.total_cash_invested)
+        self.assertEqual(round(capex.year1_cash_flow, 6),
+                         round(base.year1_cash_flow, 6))
+
+        self.app.f_capex0.var.set(str(base.inputs.initial_capex))
+        self.app.f_repair_bump.var.set("5")
+        self.app.underwrite()
+        bump = self.app.result
+        self.assertEqual(round(bump.total_cash_invested, 6),
+                         round(base.total_cash_invested, 6))
+        self.assertLess(bump.year1_cash_flow, base.year1_cash_flow)
+        self.assertEqual(round(bump.years[1].noi, 6), round(base.years[1].noi, 6))
 
 
 if __name__ == "__main__":

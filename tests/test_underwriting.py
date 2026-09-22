@@ -33,7 +33,8 @@ from financial_engine import (  # noqa: E402
     project,
     underwrite,
 )
-from report import Thresholds, format_report, screen, render_table  # noqa: E402
+from report import (Thresholds, format_report, screen, render_table,  # noqa: E402
+                    verdict)
 from sample_listing import SAMPLE_LISTING_HTML  # noqa: E402
 from sensitivity import (  # noqa: E402
     RENT_LEVEL_DELTAS,
@@ -433,7 +434,7 @@ class TestYearOnePessimism(unittest.TestCase):
                                         lease_up_months=3))
         self.assertLess(result.dscr, result.stabilized_dscr)
         checks = screen(result, Thresholds(min_dscr=result.stabilized_dscr - 0.01))
-        self.assertEqual(checks["DSCR"], "FLAG")
+        self.assertEqual(checks["DSCR"], "FAIL")
 
     def test_report_labels_year_one_and_shows_stabilized(self):
         text = format_report(underwrite(make_inputs()), None, Thresholds())
@@ -642,8 +643,18 @@ class TestReport(unittest.TestCase):
             expenses=OperatingExpenses(property_tax_annual=8000, insurance_annual=2000),
         ))
         checks = screen(result, Thresholds())
-        self.assertEqual(checks["DSCR"], "FLAG")
-        self.assertEqual(checks["Cash-on-Cash"], "FLAG")
+        self.assertEqual(checks["DSCR"], "FAIL")
+        self.assertEqual(checks["Cash-on-Cash"], "FAIL")
+
+    def test_verdict_says_pass_only_when_every_threshold_clears(self):
+        """PASS is reserved for deals that clear. A miss reads FAIL, not 'pass'."""
+        self.assertTrue(verdict({"DSCR": "PASS", "IRR": "PASS"}).startswith("PASS"))
+        marginal = verdict({"DSCR": "PASS", "IRR": "FAIL"})
+        self.assertTrue(marginal.startswith("MARGINAL"))
+        bad = verdict({"DSCR": "FAIL", "IRR": "FAIL", "Cap Rate": "FAIL"})
+        self.assertTrue(bad.startswith("FAIL"))
+        self.assertNotIn("PASS", bad)
+        self.assertNotIn("PASS", marginal)
 
     def test_breakeven_occupancy_is_not_screened_by_default(self):
         """It duplicates the cash-flow test, so it is reported, not screened."""

@@ -35,7 +35,7 @@ assumption, and the report, projection and sensitivity grids update on
 - **An "After tax" tab** reports depreciation, passive losses and the tax due
   at sale. Reported, never mixed into the pre-tax numbers.
 - **Comparison tab** stacks deals as you screen them, one row each, colored
-  by PASS/FLAG. Export it to CSV.
+  by PASS/FAIL. Export it to CSV.
 - **Export** the full report as text or JSON.
 
 Tkinter ships with Python, so there is nothing extra to install on Windows or
@@ -150,6 +150,16 @@ steady-state vacancy rate, and a **make-ready** spend (default $2,500 or 1%
 of price, whichever is higher) in total cash invested and the cap-rate
 basis. Years 2+ are unaffected.
 
+Make-ready and the optional **year-1 extra repairs** box are not the same
+input and do not overlap. Make-ready is *capital* spent before the first
+tenant: it leaves your pocket at closing, so it shows up in cash invested
+and in the cap-rate basis and never touches NOI. Year-1 extra repairs is an
+*operating* expense after move-in — a temporary bump on top of the
+steady-state maintenance percentage that drops away in year 2, so it lowers
+year-1 NOI, DSCR and cash flow but costs no additional cash at closing. It
+defaults to 0, so nothing is double-counted unless you deliberately turn it
+on.
+
 The headline metrics — DSCR, cash-on-cash, monthly cash flow, cap rate —
 are year 1, and the verdict screens on them. A **Stabilized (year 2)** line
 prints beside them, so a deal that fails only because of lease-up reads
@@ -226,8 +236,10 @@ use it as a genuine stress test, set `Thresholds.max_breakeven_occupancy`
 *tighter* than your assumed occupancy (e.g. 0.85 with a 1-month vacancy
 assumption: "does this still work if vacancy doubles?").
 
-Verdicts: **INVESTIGATE FURTHER** (clears everything) · **MARGINAL** (one or
-two misses, DSCR intact) · **PASS ON IT**.
+Verdicts: **PASS** (clears every threshold — worth a closer look) ·
+**MARGINAL** (one or two misses, DSCR intact) · **FAIL** (anything worse, or
+any DSCR miss). PASS means the listing cleared the screen; a listing that
+misses thresholds reads FAIL, never "pass".
 
 ## Layout
 
@@ -238,12 +250,12 @@ two misses, DSCR intact) · **PASS ON IT**.
 | `financial_engine.py` | All arithmetic. `PropertyInputs` → year-by-year projection, cap rate, CoC, DSCR, breakeven occupancy, both exit IRRs via self-contained Newton-Raphson with a scanning bisection fallback. No numpy. |
 | `tax_engine.py` | The after-tax layer. Reads a finished `UnderwritingResult` and never changes a pre-tax number: depreciation, passive-loss carryforward, recapture and capital gains at sale, after-tax IRRs. |
 | `sensitivity.py` | Grids: rent growth × vacancy, interest rate, and rent level centred on **your** entered rent (−20% to +5%, labelled in dollars). Deep-copies the base inputs per run. |
-| `report.py` | Text report with PASS/FLAG markers and a fixed-width table renderer. |
+| `report.py` | Text report with PASS/FAIL markers and a fixed-width table renderer. |
 | `gui.py` | Tkinter desktop app over the same pipeline — editable fields, live report, comparison table, CSV/JSON export. |
 | `main.py` | CLI wiring: extract → enrich → finance → report → sensitivity. `--gui` launches the desktop app. |
 | `rental_analyzer.spec` | PyInstaller recipe for a standalone double-clickable build. Preflights the parser, bundles bs4 via `collect_all`, and uses onedir on macOS / onefile elsewhere. |
 | `sample_listing.py` | A realistic fabricated flexmls page so `python3 main.py` runs with no setup. |
-| `tests/` | `python3 -m unittest discover tests` — 155 tests over loan math, the IRR solver, the required rent and tax inputs, year-1 pessimism, end-of-year appreciation, both exits, the after-tax layer, grid isolation, and the GUI (widget tests skip automatically on a headless box). |
+| `tests/` | `python3 -m unittest discover tests` — 160 tests over loan math, the IRR solver, the required rent and tax inputs, year-1 pessimism, end-of-year appreciation, both exits, the after-tax layer, grid isolation, and the GUI (widget tests skip automatically on a headless box). |
 
 ## Extending it
 
