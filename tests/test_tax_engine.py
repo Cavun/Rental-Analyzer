@@ -298,7 +298,7 @@ class TestOutputs(unittest.TestCase):
         low = Thresholds(min_after_tax_irr=self.layer.irr_screened - 0.01)
         high = Thresholds(min_after_tax_irr=self.layer.irr_screened + 0.01)
         self.assertEqual(screen(self.result, low, self.layer)["After-tax IRR"], "PASS")
-        self.assertEqual(screen(self.result, high, self.layer)["After-tax IRR"], "FLAG")
+        self.assertEqual(screen(self.result, high, self.layer)["After-tax IRR"], "FAIL")
 
     def test_report_renders_the_after_tax_section(self):
         text = format_report(self.result, None, Thresholds(), after_tax=self.layer)

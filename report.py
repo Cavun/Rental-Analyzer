@@ -2,7 +2,7 @@
 report.py
 
 Turns an UnderwritingResult into something you can read in a terminal in ten
-seconds and decide: look closer, or pass.
+seconds and decide: look closer, or walk away.
 
 Nothing here computes a deal metric -- it only formats what
 financial_engine.py already produced.
@@ -17,7 +17,7 @@ from enrichment import EnrichedListing
 from financial_engine import UnderwritingResult
 
 PASS = "PASS"
-FLAG = "FLAG"
+FAIL = "FAIL"
 WIDTH = 78
 
 
@@ -86,14 +86,14 @@ def _header(title: str) -> str:
 
 def _check(actual: Optional[float], minimum: float) -> str:
     if actual is None:
-        return FLAG
-    return PASS if actual >= minimum else FLAG
+        return FAIL
+    return PASS if actual >= minimum else FAIL
 
 
 def _check_max(actual: Optional[float], maximum: float) -> str:
     if actual is None:
-        return FLAG
-    return PASS if actual <= maximum else FLAG
+        return FAIL
+    return PASS if actual <= maximum else FAIL
 
 
 def _wrap(text: str, indent: str = "  ") -> str:
@@ -186,10 +186,10 @@ def screen(result: UnderwritingResult,
            thresholds: Optional[Thresholds] = None,
            after_tax=None) -> Dict[str, str]:
     """
-    Return {metric: PASS|FLAG} for each screening threshold.
+    Return {metric: PASS|FAIL} for each screening threshold.
 
     Every metric here is YEAR 1, lease-up included. Screening on the
-    stabilized year would pass deals you cannot actually fund through their
+    stabilized year would clear deals you cannot actually fund through their
     first twelve months; the stabilized figures are reported beside these so
     a lease-up failure is distinguishable from a permanent one.
 
@@ -213,12 +213,12 @@ def screen(result: UnderwritingResult,
 
 
 def verdict(checks: Dict[str, str]) -> str:
-    flags = [k for k, v in checks.items() if v == FLAG]
-    if not flags:
-        return "INVESTIGATE FURTHER -- clears every screening threshold."
-    if len(flags) <= 2 and "DSCR" not in flags:
-        return f"MARGINAL -- {len(flags)} threshold(s) missed: {', '.join(flags)}."
-    return f"PASS ON IT -- {len(flags)} threshold(s) missed: {', '.join(flags)}."
+    missed = [k for k, v in checks.items() if v == FAIL]
+    if not missed:
+        return "PASS -- clears every screening threshold; worth a closer look."
+    if len(missed) <= 2 and "DSCR" not in missed:
+        return f"MARGINAL -- {len(missed)} threshold(s) missed: {', '.join(missed)}."
+    return f"FAIL -- {len(missed)} threshold(s) missed: {', '.join(missed)}."
 
 
 def format_report(result: UnderwritingResult,
@@ -275,7 +275,7 @@ def format_report(result: UnderwritingResult,
         [f"Down payment ({pct(inputs.down_payment_pct, 0)})", money(inputs.down_payment)],
         ["Loan amount", money(inputs.loan_amount)],
         [f"Closing costs ({pct(inputs.closing_cost_pct, 0)})", money(inputs.closing_costs)],
-        ["Initial make-ready / rehab", money(inputs.initial_capex)],
+        ["Initial make-ready / rehab (capital, pre-tenant)", money(inputs.initial_capex)],
         ["TOTAL CASH IN", money(result.total_cash_invested)],
         [f"Financing ({pct(inputs.interest_rate, 2)}, {inputs.loan_term_years}yr)",
          money(result.monthly_payment, 2) + "/mo"],
@@ -303,9 +303,9 @@ def format_report(result: UnderwritingResult,
         [f"Capex reserve ({pct(exp.capex_reserve_pct, 0)})", "-" + money(y1.effective_gross_income * exp.capex_reserve_pct), ""],
     ]
     if inputs.year1_repair_bump_pct:
-        rows.append([f"Year-1 repair bump ({pct(inputs.year1_repair_bump_pct, 0)})",
+        rows.append([f"Year-1 extra repairs ({pct(inputs.year1_repair_bump_pct, 0)})",
                      "-" + money(y1.effective_gross_income * inputs.year1_repair_bump_pct),
-                     "year 1 only"])
+                     "year 1 only, after move-in"])
     rows += [
         ["NET OPERATING INCOME", money(y1.noi), ""],
         ["Debt service", "-" + money(y1.debt_service), ""],
@@ -557,7 +557,7 @@ def one_line_summary(result: UnderwritingResult,
                      label: str = "") -> List[str]:
     """Row for the batch-mode comparison table."""
     checks = screen(result, thresholds)
-    flags = sum(1 for v in checks.values() if v == FLAG)
+    missed = sum(1 for v in checks.values() if v == FAIL)
     return [
         (label or result.inputs.label or "?")[:34],
         money(result.inputs.purchase_price),
@@ -567,7 +567,7 @@ def one_line_summary(result: UnderwritingResult,
         ratio(result.dscr),
         pct(result.irr_screened, 1),
         money(result.monthly_cash_flow),
-        PASS if flags == 0 else f"{FLAG} x{flags}",
+        PASS if missed == 0 else f"{FAIL} x{missed}",
     ]
 
 
