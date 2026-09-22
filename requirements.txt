@@ -1,0 +1,2 @@
+# Only runtime dependency. No API keys, no environment variables, no network calls.
+beautifulsoup4>=4.12
