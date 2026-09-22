@@ -1,8 +1,8 @@
 name: Build desktop app
 
 # Every merge into main runs the tests, then packages the GUI with PyInstaller
-# on all three desktop platforms and publishes the results. Nothing to do by
-# hand. You can also kick a build off from the Actions tab (Run workflow).
+# on a Windows runner and publishes RentalAnalyzer.exe as a release. Nothing to
+# do by hand. You can also kick a build off from the Actions tab (Run workflow).
 on:
   push:
     branches: [main]
@@ -40,22 +40,9 @@ jobs:
         run: python -m unittest discover -s tests -v
 
   build:
-    name: Build (${{ matrix.label }})
+    name: Build (Windows)
     needs: test
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            label: windows
-            artifact: RentalAnalyzer-windows
-          - os: macos-latest
-            label: macos
-            artifact: RentalAnalyzer-macos
-          - os: ubuntu-latest
-            label: linux
-            artifact: RentalAnalyzer-linux
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -63,14 +50,6 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-
-      - name: Install Tk system libraries (Linux)
-        if: matrix.label == 'linux'
-        # The runner's Python links _tkinter against these; without them the
-        # GUI cannot be bundled and the app dies on launch.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-tk
 
       - name: Install dependencies
         # beautifulsoup4 must land in the SAME interpreter that runs
@@ -89,88 +68,48 @@ jobs:
       - name: Build with PyInstaller
         run: python -m PyInstaller --noconfirm --clean rental_analyzer.spec
 
-      # Windows and Linux produce a single file; macOS produces a .app bundle,
-      # which is a directory, so it gets zipped (and ditto preserves the bits
-      # that make the bundle launchable).
-      - name: Package (Windows)
-        if: matrix.label == 'windows'
-        run: |
-          mkdir upload
-          copy dist\RentalAnalyzer.exe upload\RentalAnalyzer.exe
-        shell: cmd
-
-      - name: Package (Linux)
-        if: matrix.label == 'linux'
-        run: |
-          mkdir -p upload
-          cp dist/RentalAnalyzer upload/RentalAnalyzer
-          chmod +x upload/RentalAnalyzer
-
-      - name: Package (macOS)
-        if: matrix.label == 'macos'
-        run: |
-          mkdir -p upload
-          ditto -c -k --sequesterRsrc --keepParent \
-            dist/RentalAnalyzer.app upload/RentalAnalyzer-macos.zip
-
-      - name: Smoke-test the binary (Linux)
-        if: matrix.label == 'linux'
-        # The app is a GUI, so there is no --version to call. This at least
-        # proves the bundle unpacks and the bootloader runs: with no display
-        # it exits on tkinter, not on a missing module like bs4.
-        run: |
-          set +e
-          output="$(timeout 60 ./upload/RentalAnalyzer 2>&1)"
-          echo "$output"
-          if echo "$output" | grep -q "No module named"; then
-            echo "::error::Packaged app is missing a module -- see output above."
-            exit 1
-          fi
+      - name: Check the .exe actually contains the GUI and the parser
+        # The app is a GUI, so it cannot be launched on a runner to prove it
+        # works. Read the bundle's own table of contents instead: a build that
+        # silently dropped tkinter or bs4 fails here rather than on the
+        # machine of whoever downloads it.
+        run: python .github/scripts/check_bundle.py dist/RentalAnalyzer.exe
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: upload/
+          name: RentalAnalyzer-windows
+          path: dist/RentalAnalyzer.exe
           if-no-files-found: error
           retention-days: 90
 
   release:
     name: Publish release
     needs: build
-    # Only merges into main publish. PR builds stop at the artifacts above.
+    # Only merges into main publish. PR builds stop at the artifact above.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Download built apps
+      - name: Download the built app
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
-
-      - name: Lay the files out for upload
-        run: |
-          mkdir -p release
-          cp artifacts/RentalAnalyzer-windows/RentalAnalyzer.exe release/RentalAnalyzer-windows.exe
-          cp artifacts/RentalAnalyzer-linux/RentalAnalyzer       release/RentalAnalyzer-linux
-          cp artifacts/RentalAnalyzer-macos/RentalAnalyzer-macos.zip release/RentalAnalyzer-macos.zip
-          ls -lh release
+          name: RentalAnalyzer-windows
+          path: release
 
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="build-${{ github.run_number }}"
-          gh release create "$tag" release/* \
+          gh release create "$tag" release/RentalAnalyzer.exe \
+            --repo "${{ github.repository }}" \
             --title "RentalAnalyzer $tag" \
             --target "${{ github.sha }}" \
             --latest \
-            --notes "Automated build of \`${{ github.sha }}\`.
+            --notes "Automated Windows build of \`${{ github.sha }}\`.
 
-          | Download | Platform |
-          | --- | --- |
-          | \`RentalAnalyzer-windows.exe\` | Windows -- double-click to run |
-          | \`RentalAnalyzer-macos.zip\` | macOS (Apple silicon) -- unzip, then right-click > Open the first time |
-          | \`RentalAnalyzer-linux\` | Linux -- \`chmod +x\` then run (needs python3-tk's system libs) |
+          Download \`RentalAnalyzer.exe\` below and double-click it. No Python
+          needed on the machine that runs it. Windows SmartScreen will warn
+          about an unrecognised publisher the first time, because the build is
+          unsigned: *More info* > *Run anyway*.
 
           Built from ${{ github.ref_name }} by [this workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."

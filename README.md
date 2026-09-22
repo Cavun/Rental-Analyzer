@@ -64,22 +64,27 @@ build log says `Hidden import 'soupsieve' not found`, that is the symptom.
 ### Or let CI build it for you
 
 `.github/workflows/build.yml` does all of the above on every merge into
-`main`: it runs the test suite, then builds the app on Windows, macOS and
-Linux runners in parallel.
+`main`: it runs the test suite, then packages the app on a Windows runner.
 
-- **Every run** (including pull requests) attaches the three builds to the
-  workflow run as artifacts, kept for 90 days — Actions tab → the run →
-  *Artifacts*.
+- **Every run** (including pull requests) attaches `RentalAnalyzer.exe` to
+  the workflow run as an artifact, kept for 90 days — Actions tab → the run
+  → *Artifacts*.
 - **Merges into `main`** additionally publish a GitHub Release tagged
   `build-<run number>`, marked as the latest release, holding
-  `RentalAnalyzer-windows.exe`, `RentalAnalyzer-macos.zip` and
-  `RentalAnalyzer-linux`. That is the link to hand someone who just wants
-  the app.
+  `RentalAnalyzer.exe`. That is the link to hand someone who just wants the
+  app.
 
-You can also trigger it by hand from the Actions tab (*Run workflow*). The
-Linux job runs the packaged binary once as a smoke test and fails the build
-if the bundle is missing a module — the `bs4` gotcha above, caught in CI
-rather than by whoever downloads it.
+You can also trigger it by hand from the Actions tab (*Run workflow*). Only
+Windows is built; macOS and Linux users run from source with the commands
+above.
+
+Two guards sit around the build, because the gotcha above is silent — a
+build that dropped a dependency still writes a clean log. A preflight step
+imports `tkinter` and `bs4` before building, and
+`.github/scripts/check_bundle.py` then reads the finished `.exe`'s table of
+contents and fails the build if either one, or `soupsieve`, did not make it
+in. A GUI cannot be launched on a runner to check, so the bundle gets
+inspected instead.
 
 ## Using it from the command line
 
@@ -274,7 +279,8 @@ misses thresholds reads FAIL, never "pass".
 | `gui.py` | Tkinter desktop app over the same pipeline — editable fields, live report, comparison table, CSV/JSON export. |
 | `main.py` | CLI wiring: extract → enrich → finance → report → sensitivity. `--gui` launches the desktop app. |
 | `rental_analyzer.spec` | PyInstaller recipe for a standalone double-clickable build. Preflights the parser, bundles bs4 via `collect_all`, and uses onedir on macOS / onefile elsewhere. |
-| `.github/workflows/build.yml` | CI: tests every push and pull request, then packages the app on Windows, macOS and Linux. Merges into `main` publish a GitHub Release with all three builds. |
+| `.github/workflows/build.yml` | CI: tests every push and pull request, then packages the app on a Windows runner. Merges into `main` publish a GitHub Release holding `RentalAnalyzer.exe`. |
+| `.github/scripts/check_bundle.py` | Post-build guard. Reads the finished `.exe`'s table of contents and fails the build if `tkinter`, `bs4` or `soupsieve` silently did not get bundled. |
 | `sample_listing.py` | A realistic fabricated flexmls page so `python3 main.py` runs with no setup. |
 | `tests/` | `python3 -m unittest discover tests` — 160 tests over loan math, the IRR solver, the required rent and tax inputs, year-1 pessimism, end-of-year appreciation, both exits, the after-tax layer, grid isolation, and the GUI (widget tests skip automatically on a headless box). |
 
