@@ -85,8 +85,17 @@ jobs:
   release:
     name: Publish release
     needs: build
-    # Only merges into main publish. PR builds stop at the artifact above.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # TEMPORARILY DISABLED. Merges into main no longer cut a GitHub Release;
+    # the job and its steps are kept intact so this is a one-line revert.
+    #
+    # Nothing else changes: the tests still run and the Windows build still
+    # uploads RentalAnalyzer.exe as a workflow artifact on every run (90-day
+    # retention), so a build of any merge is still downloadable from the
+    # Actions tab -- it just is not published as a release.
+    #
+    # To turn it back on, restore the original condition:
+    #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: false
     runs-on: ubuntu-latest
     steps:
       - name: Download the built app
