@@ -61,6 +61,26 @@ with the *same* `python` you build with, and the spec's preflight check will
 stop the build with instructions rather than shipping a broken app. If the
 build log says `Hidden import 'soupsieve' not found`, that is the symptom.
 
+### Or let CI build it for you
+
+`.github/workflows/build.yml` does all of the above on every merge into
+`main`: it runs the test suite, then builds the app on Windows, macOS and
+Linux runners in parallel.
+
+- **Every run** (including pull requests) attaches the three builds to the
+  workflow run as artifacts, kept for 90 days — Actions tab → the run →
+  *Artifacts*.
+- **Merges into `main`** additionally publish a GitHub Release tagged
+  `build-<run number>`, marked as the latest release, holding
+  `RentalAnalyzer-windows.exe`, `RentalAnalyzer-macos.zip` and
+  `RentalAnalyzer-linux`. That is the link to hand someone who just wants
+  the app.
+
+You can also trigger it by hand from the Actions tab (*Run workflow*). The
+Linux job runs the packaged binary once as a smoke test and fails the build
+if the bundle is missing a module — the `bs4` gotcha above, caught in CI
+rather than by whoever downloads it.
+
 ## Using it from the command line
 
 flexmls disallows automated access in robots.txt, and the consumer portals
@@ -254,6 +274,7 @@ misses thresholds reads FAIL, never "pass".
 | `gui.py` | Tkinter desktop app over the same pipeline — editable fields, live report, comparison table, CSV/JSON export. |
 | `main.py` | CLI wiring: extract → enrich → finance → report → sensitivity. `--gui` launches the desktop app. |
 | `rental_analyzer.spec` | PyInstaller recipe for a standalone double-clickable build. Preflights the parser, bundles bs4 via `collect_all`, and uses onedir on macOS / onefile elsewhere. |
+| `.github/workflows/build.yml` | CI: tests every push and pull request, then packages the app on Windows, macOS and Linux. Merges into `main` publish a GitHub Release with all three builds. |
 | `sample_listing.py` | A realistic fabricated flexmls page so `python3 main.py` runs with no setup. |
 | `tests/` | `python3 -m unittest discover tests` — 160 tests over loan math, the IRR solver, the required rent and tax inputs, year-1 pessimism, end-of-year appreciation, both exits, the after-tax layer, grid isolation, and the GUI (widget tests skip automatically on a headless box). |
 

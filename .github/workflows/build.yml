@@ -1,0 +1,176 @@
+name: Build desktop app
+
+# Every merge into main runs the tests, then packages the GUI with PyInstaller
+# on all three desktop platforms and publishes the results. Nothing to do by
+# hand. You can also kick a build off from the Actions tab (Run workflow).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write     # needed by the release job to create the release
+
+concurrency:
+  # A newer push to main supersedes an in-flight build of an older commit.
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run the suite
+        # Headless box: the widget tests skip themselves, the rest must pass.
+        run: python -m unittest discover -s tests -v
+
+  build:
+    name: Build (${{ matrix.label }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: windows
+            artifact: RentalAnalyzer-windows
+          - os: macos-latest
+            label: macos
+            artifact: RentalAnalyzer-macos
+          - os: ubuntu-latest
+            label: linux
+            artifact: RentalAnalyzer-linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install Tk system libraries (Linux)
+        if: matrix.label == 'linux'
+        # The runner's Python links _tkinter against these; without them the
+        # GUI cannot be bundled and the app dies on launch.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+
+      - name: Install dependencies
+        # beautifulsoup4 must land in the SAME interpreter that runs
+        # PyInstaller, or the spec file's preflight check stops the build.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller
+
+      - name: Check the build interpreter can see the GUI toolkit
+        # PyInstaller bundles only what THIS Python can import. If tkinter is
+        # missing, the build still succeeds and ships an app that crashes on
+        # launch -- so fail here instead, where the message is readable.
+        run: python -c "import tkinter, bs4; print('tkinter', tkinter.TkVersion, '| bs4', bs4.__version__)"
+
+      - name: Build with PyInstaller
+        run: python -m PyInstaller --noconfirm --clean rental_analyzer.spec
+
+      # Windows and Linux produce a single file; macOS produces a .app bundle,
+      # which is a directory, so it gets zipped (and ditto preserves the bits
+      # that make the bundle launchable).
+      - name: Package (Windows)
+        if: matrix.label == 'windows'
+        run: |
+          mkdir upload
+          copy dist\RentalAnalyzer.exe upload\RentalAnalyzer.exe
+        shell: cmd
+
+      - name: Package (Linux)
+        if: matrix.label == 'linux'
+        run: |
+          mkdir -p upload
+          cp dist/RentalAnalyzer upload/RentalAnalyzer
+          chmod +x upload/RentalAnalyzer
+
+      - name: Package (macOS)
+        if: matrix.label == 'macos'
+        run: |
+          mkdir -p upload
+          ditto -c -k --sequesterRsrc --keepParent \
+            dist/RentalAnalyzer.app upload/RentalAnalyzer-macos.zip
+
+      - name: Smoke-test the binary (Linux)
+        if: matrix.label == 'linux'
+        # The app is a GUI, so there is no --version to call. This at least
+        # proves the bundle unpacks and the bootloader runs: with no display
+        # it exits on tkinter, not on a missing module like bs4.
+        run: |
+          set +e
+          output="$(timeout 60 ./upload/RentalAnalyzer 2>&1)"
+          echo "$output"
+          if echo "$output" | grep -q "No module named"; then
+            echo "::error::Packaged app is missing a module -- see output above."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: upload/
+          if-no-files-found: error
+          retention-days: 90
+
+  release:
+    name: Publish release
+    needs: build
+    # Only merges into main publish. PR builds stop at the artifacts above.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download built apps
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Lay the files out for upload
+        run: |
+          mkdir -p release
+          cp artifacts/RentalAnalyzer-windows/RentalAnalyzer.exe release/RentalAnalyzer-windows.exe
+          cp artifacts/RentalAnalyzer-linux/RentalAnalyzer       release/RentalAnalyzer-linux
+          cp artifacts/RentalAnalyzer-macos/RentalAnalyzer-macos.zip release/RentalAnalyzer-macos.zip
+          ls -lh release
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="build-${{ github.run_number }}"
+          gh release create "$tag" release/* \
+            --title "RentalAnalyzer $tag" \
+            --target "${{ github.sha }}" \
+            --latest \
+            --notes "Automated build of \`${{ github.sha }}\`.
+
+          | Download | Platform |
+          | --- | --- |
+          | \`RentalAnalyzer-windows.exe\` | Windows -- double-click to run |
+          | \`RentalAnalyzer-macos.zip\` | macOS (Apple silicon) -- unzip, then right-click > Open the first time |
+          | \`RentalAnalyzer-linux\` | Linux -- \`chmod +x\` then run (needs python3-tk's system libs) |
+
+          Built from ${{ github.ref_name }} by [this workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
