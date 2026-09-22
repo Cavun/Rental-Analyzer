@@ -322,7 +322,13 @@ def verdict(checks: Dict[str, str]) -> str:
     if not missed:
         return ("PASS -- clears every screening threshold; worth a closer look."
                 + starred)
-    if len(missed) <= 2 and "DSCR" not in missed:
+    # MARGINAL means "close" -- a deal that clears most of the bars you
+    # actually screen on and misses one or two. It is a proportion, not a
+    # raw count: if every enabled threshold failed, the deal cleared nothing
+    # and is a FAIL, however few thresholds you left switched on. A default
+    # config screens on two metrics, so a raw count of 2 would otherwise
+    # call an 0-for-2 deal marginal.
+    if len(missed) < len(checks) and len(missed) <= 2 and "DSCR" not in missed:
         return (f"MARGINAL -- {len(missed)} threshold(s) missed: "
                 f"{', '.join(missed)}." + starred)
     return (f"FAIL -- {len(missed)} threshold(s) missed: {', '.join(missed)}."

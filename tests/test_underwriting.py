@@ -658,6 +658,36 @@ class TestReport(unittest.TestCase):
         self.assertNotIn("PASS", bad)
         self.assertNotIn("PASS", marginal)
 
+    def test_verdict_is_fail_when_every_enabled_threshold_misses(self):
+        """MARGINAL is a proportion, not a count of two.
+
+        The default config screens on two metrics, so a deal that misses
+        both cleared nothing at all -- that is a FAIL, not "close".
+        """
+        swept = verdict({"Cash-on-Cash": "FAIL", "Monthly Cash Flow": "FAIL"})
+        self.assertTrue(swept.startswith("FAIL"), swept)
+        lone = verdict({"Cash-on-Cash": "FAIL"})
+        self.assertTrue(lone.startswith("FAIL"), lone)
+
+    def test_verdict_is_marginal_when_something_still_clears(self):
+        """One miss beside a pass is still the close call MARGINAL is for."""
+        self.assertTrue(verdict(
+            {"Cash-on-Cash": "PASS", "Monthly Cash Flow": "FAIL"},
+        ).startswith("MARGINAL"))
+        self.assertTrue(verdict(
+            {"Cap Rate": "PASS", "Cash-on-Cash": "FAIL", "IRR": "FAIL"},
+        ).startswith("MARGINAL"))
+
+    def test_default_screened_deal_that_clears_nothing_reads_fail(self):
+        """End to end, on the default thresholds -- not just verdict() alone."""
+        result = underwrite(PropertyInputs(
+            purchase_price=400000, monthly_rent=1500,
+            expenses=OperatingExpenses(property_tax_annual=8000, insurance_annual=2000),
+        ))
+        checks = screen(result, Thresholds())
+        self.assertTrue(all(v == "FAIL" for v in checks.values()), checks)
+        self.assertTrue(verdict(checks).startswith("FAIL"), verdict(checks))
+
     def test_breakeven_occupancy_is_not_screened_by_default(self):
         """It duplicates the cash-flow test, so it is reported, not screened."""
         result = underwrite(PropertyInputs(
