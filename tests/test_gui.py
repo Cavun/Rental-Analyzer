@@ -103,3 +103,40 @@ class TestGUIPipeline(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(HAS_TK and HAS_DISPLAY, "needs tkinter and a display")
+class TestThresholdsAreAllExposed(unittest.TestCase):
+    """Every threshold screen() enforces must have a box driving it."""
+
+    def setUp(self):
+        import tkinter as tk
+        from gui import RentalAnalyzerGUI
+        self.root = tk.Tk()
+        self.app = RentalAnalyzerGUI(self.root)
+        self.root.update()
+
+    def tearDown(self):
+        self.root.destroy()
+
+    def test_every_threshold_field_is_driven_by_the_form(self):
+        import dataclasses
+        from report import Thresholds
+        defaults = Thresholds()
+        from_form = self.app.thresholds_from_fields()
+        for field in dataclasses.fields(Thresholds):
+            self.assertEqual(getattr(from_form, field.name), getattr(defaults, field.name),
+                             f"{field.name} is not wired to the form")
+
+    def test_cash_flow_and_breakeven_boxes_change_the_screen(self):
+        from report import screen
+        self.app.load_sample()
+        checks = screen(self.app.result, self.app.thresholds_from_fields())
+        self.assertEqual(checks["Monthly Cash Flow"], "FLAG")
+        self.assertEqual(checks["Breakeven Occupancy"], "FLAG")
+        # Loosen both: a landlord willing to feed the deal $300/mo.
+        self.app.f_min_cf.var.set("-300")
+        self.app.f_max_breakeven.var.set("105")
+        checks = screen(self.app.result, self.app.thresholds_from_fields())
+        self.assertEqual(checks["Monthly Cash Flow"], "PASS")
+        self.assertEqual(checks["Breakeven Occupancy"], "PASS")

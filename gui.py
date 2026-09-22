@@ -299,6 +299,17 @@ class RentalAnalyzerGUI(ttk.Frame):
         self.f_min_cap = LabeledEntry(thr, 0, 1, "Min cap rate", suffix="%")
         self.f_min_coc = LabeledEntry(thr, 1, 0, "Min cash-on-cash", suffix="%")
         self.f_min_irr = LabeledEntry(thr, 1, 1, "Min IRR", suffix="%")
+        self.f_min_cf = LabeledEntry(
+            thr, 2, 0, "Min monthly CF", suffix="$",
+            tooltip="Year-1 cash flow after debt service. 0 means the deal may not "
+                    "cost you money every month. Set it negative to allow a deal you "
+                    "are willing to feed.")
+        self.f_max_breakeven = LabeledEntry(
+            thr, 2, 1, "Max breakeven", suffix="%",
+            tooltip="Share of gross scheduled rent needed to cover operating costs and "
+                    "debt service. At 90% the property can sit empty about 1.2 months a "
+                    "year before it goes cash-flow negative. Above 100% it never covers "
+                    "its costs, even fully occupied.")
 
         self.reset_fields(keep_listing=False)
 
@@ -533,6 +544,8 @@ class RentalAnalyzerGUI(ttk.Frame):
             min_cap_rate=(self.f_min_cap.get(5.0) or 0.0) / 100,
             min_cash_on_cash=(self.f_min_coc.get(8.0) or 0.0) / 100,
             min_irr=(self.f_min_irr.get(10.0) or 0.0) / 100,
+            min_monthly_cash_flow=self.f_min_cf.get(0.0) or 0.0,
+            max_breakeven_occupancy=(self.f_max_breakeven.get(90.0) or 0.0) / 100,
         )
 
     # --- Actions --------------------------------------------------------
@@ -763,7 +776,7 @@ class RentalAnalyzerGUI(ttk.Frame):
             self.f_rent_growth: "3.0", self.f_exp_growth: "2.5", self.f_appreciation: "3.0",
             self.f_mgmt: "8", self.f_maint: "8", self.f_capex: "8", self.f_other: "0",
             self.f_min_dscr: "1.25", self.f_min_cap: "5.0", self.f_min_coc: "8.0",
-            self.f_min_irr: "10.0",
+            self.f_min_irr: "10.0", self.f_min_cf: "0", self.f_max_breakeven: "90",
         }
         for widget, value in defaults.items():
             widget.var.set(value)

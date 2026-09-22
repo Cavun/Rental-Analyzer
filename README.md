@@ -155,6 +155,13 @@ Defaults (tunable via `report.Thresholds` or the `--min-*` flags):
 | Monthly cash flow | ≥ $0 |
 | Breakeven occupancy | ≤ 90% |
 
+Breakeven occupancy is the share of gross scheduled rent needed to cover
+operating costs plus debt service. At 90% the property can sit empty about
+1.2 months a year before it goes cash-flow negative; above 100% it never
+covers its costs even when fully occupied. All six thresholds have boxes in
+the GUI; the CLI exposes the first three as `--min-*` flags and takes the
+rest from `report.Thresholds`.
+
 Verdicts: **INVESTIGATE FURTHER** (clears everything) · **MARGINAL** (one or
 two misses, DSCR intact) · **PASS ON IT**.
 
