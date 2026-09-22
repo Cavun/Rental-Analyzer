@@ -1,3 +1,5 @@
+# Quick Action: git pull && rm -rf build dist && python -m PyInstaller rental_analyzer.spec && ./dist/RentalAnalyzer.exe
+
 # Rental Analyzer
 
 Screens single-family rental deals from an MLS listing page. Paste in one
