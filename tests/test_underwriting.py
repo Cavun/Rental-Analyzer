@@ -23,7 +23,7 @@ from financial_engine import (  # noqa: E402
     npv,
     underwrite,
 )
-from report import Thresholds, screen, render_table  # noqa: E402
+from report import Thresholds, format_report, screen, render_table  # noqa: E402
 from sample_listing import SAMPLE_LISTING_HTML  # noqa: E402
 from sensitivity import interest_rate_grid, rent_growth_vs_vacancy, rent_level_grid  # noqa: E402
 
@@ -253,6 +253,36 @@ class TestReport(unittest.TestCase):
         checks = screen(result, Thresholds())
         self.assertEqual(checks["DSCR"], "FLAG")
         self.assertEqual(checks["Cash-on-Cash"], "FLAG")
+
+    def test_breakeven_occupancy_is_not_screened_by_default(self):
+        """It duplicates the cash-flow test, so it is reported, not screened."""
+        result = underwrite(PropertyInputs(
+            purchase_price=400000, monthly_rent=1500,
+            expenses=OperatingExpenses(property_tax_annual=8000, insurance_annual=2000),
+        ))
+        self.assertNotIn("Breakeven Occupancy", screen(result, Thresholds()))
+        self.assertIn("Breakeven Occupancy",
+                      screen(result, Thresholds(max_breakeven_occupancy=0.90)))
+
+    def test_cash_flow_and_breakeven_are_the_same_condition(self):
+        """CF >= 0 iff breakeven occupancy <= assumed occupancy, at any vacancy."""
+        inputs = PropertyInputs(
+            purchase_price=239900,
+            expenses=OperatingExpenses(property_tax_annual=5245, insurance_annual=1655),
+        )
+        for vacancy in (0.0, 0.05, 1 / 12, 0.12, 0.25):
+            result = underwrite(inputs.copy_with(vacancy_rate=vacancy))
+            self.assertEqual(result.year1_cash_flow >= 0,
+                             result.breakeven_occupancy <= (1 - vacancy),
+                             f"diverged at vacancy {vacancy}")
+
+    def test_breakeven_still_appears_in_the_report(self):
+        result = underwrite(PropertyInputs(
+            purchase_price=200000,
+            expenses=OperatingExpenses(property_tax_annual=3000, insurance_annual=1200),
+        ))
+        text = format_report(result, None, Thresholds())
+        self.assertIn("Breakeven occupancy", text)
 
     def test_screen_passes_strong_deal(self):
         result = underwrite(PropertyInputs(

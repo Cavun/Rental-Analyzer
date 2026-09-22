@@ -153,14 +153,19 @@ Defaults (tunable via `report.Thresholds` or the `--min-*` flags):
 | Cash-on-cash | ≥ 8% |
 | IRR (with equity) | ≥ 10% |
 | Monthly cash flow | ≥ $0 |
-| Breakeven occupancy | ≤ 90% |
 
-Breakeven occupancy is the share of gross scheduled rent needed to cover
-operating costs plus debt service. At 90% the property can sit empty about
-1.2 months a year before it goes cash-flow negative; above 100% it never
-covers its costs even when fully occupied. All six thresholds have boxes in
-the GUI; the CLI exposes the first three as `--min-*` flags and takes the
-rest from `report.Thresholds`.
+Every threshold has a box in the GUI; the CLI exposes the first three as
+`--min-*` flags and takes the rest from `report.Thresholds`.
+
+**Breakeven occupancy is reported, not screened.** Vacancy is already an
+input, deducted from gross rent before every metric is computed, so the deal
+is judged at your assumed occupancy throughout. Screening breakeven
+occupancy on top of that would flag one weakness twice. It is still printed
+as a reference figure, because it answers something the other numbers do not
+— how much vacancy the deal can absorb before cash flow turns negative. To
+use it as a genuine stress test, set `Thresholds.max_breakeven_occupancy`
+*tighter* than your assumed occupancy (e.g. 0.85 with a 1-month vacancy
+assumption: "does this still work if vacancy doubles?").
 
 Verdicts: **INVESTIGATE FURTHER** (clears everything) · **MARGINAL** (one or
 two misses, DSCR intact) · **PASS ON IT**.

@@ -30,7 +30,18 @@ class Thresholds:
     min_cash_on_cash: float = 0.08
     min_irr: float = 0.10
     min_monthly_cash_flow: float = 0.0
-    max_breakeven_occupancy: float = 0.90
+
+    # Off by default, because it is not an independent test: breakeven
+    # occupancy <= assumed occupancy is algebraically the same condition as
+    # cash flow >= 0, so screening on both double-counts one failure and
+    # inflates the missed-threshold count. Breakeven occupancy is still
+    # reported as a reference metric -- it answers "how much vacancy can this
+    # absorb?", which the cash-flow number alone does not.
+    #
+    # Set this to screen on it anyway. The honest use is as a STRESS test,
+    # i.e. a value tighter than your assumed occupancy: 0.85 with a 1-month
+    # vacancy assumption means "must still cash flow if vacancy doubles."
+    max_breakeven_occupancy: Optional[float] = None
 
 
 # --------------------------------------------------------------------------
@@ -162,14 +173,17 @@ def screen(result: UnderwritingResult,
            thresholds: Optional[Thresholds] = None) -> Dict[str, str]:
     """Return {metric: PASS|FLAG} for each screening threshold."""
     t = thresholds or Thresholds()
-    return {
+    checks = {
         "DSCR": _check(result.dscr, t.min_dscr),
         "Cap Rate": _check(result.cap_rate, t.min_cap_rate),
         "Cash-on-Cash": _check(result.cash_on_cash, t.min_cash_on_cash),
         "IRR": _check(result.irr_with_equity, t.min_irr),
         "Monthly Cash Flow": _check(result.monthly_cash_flow, t.min_monthly_cash_flow),
-        "Breakeven Occupancy": _check_max(result.breakeven_occupancy, t.max_breakeven_occupancy),
     }
+    if t.max_breakeven_occupancy is not None:
+        checks["Breakeven Occupancy"] = _check_max(
+            result.breakeven_occupancy, t.max_breakeven_occupancy)
+    return checks
 
 
 def verdict(checks: Dict[str, str]) -> str:
@@ -277,9 +291,10 @@ def format_report(result: UnderwritingResult,
          f">= {pct(t.min_irr, 0)}", checks["IRR"]],
         ["Monthly cash flow", money(result.monthly_cash_flow),
          f">= {money(t.min_monthly_cash_flow)}", checks["Monthly Cash Flow"]],
-        ["Breakeven occupancy", pct(result.breakeven_occupancy, 1),
-         f"<= {pct(t.max_breakeven_occupancy, 0)}", checks["Breakeven Occupancy"]],
     ]
+    if "Breakeven Occupancy" in checks:
+        rows.append(["Breakeven occupancy", pct(result.breakeven_occupancy, 1),
+                     f"<= {pct(t.max_breakeven_occupancy, 0)}", checks["Breakeven Occupancy"]])
     out.append(render_table(["Metric", "Value", "Threshold", "Result"], rows))
 
     out.append("")
@@ -288,6 +303,16 @@ def format_report(result: UnderwritingResult,
         f"rent/price {pct(result.one_percent_rule, 2)}",
         f"IRR cash-flow-only {pct(result.irr_cash_flow_only)}",
     ]))
+    # Not a screened metric by default (see Thresholds) but worth stating:
+    # it converts the cash-flow number into months of vacancy tolerance.
+    months = max(0.0, (1 - result.breakeven_occupancy)) * 12
+    out.append(_wrap(
+        f"Breakeven occupancy {pct(result.breakeven_occupancy, 1)}: rent must be collected "
+        f"that share of the year to cover costs, leaving room for about {months:.1f} "
+        f"vacant month(s) before cash flow turns negative "
+        f"(underwritten at {pct(inputs.vacancy_rate, 1)} vacancy = "
+        f"{inputs.vacancy_rate * 12:.1f} month(s))."
+    ))
     out.append("")
     out.append(_wrap("VERDICT: " + verdict(checks)))
 

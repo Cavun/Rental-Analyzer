@@ -304,12 +304,6 @@ class RentalAnalyzerGUI(ttk.Frame):
             tooltip="Year-1 cash flow after debt service. 0 means the deal may not "
                     "cost you money every month. Set it negative to allow a deal you "
                     "are willing to feed.")
-        self.f_max_breakeven = LabeledEntry(
-            thr, 2, 1, "Max breakeven", suffix="%",
-            tooltip="Share of gross scheduled rent needed to cover operating costs and "
-                    "debt service. At 90% the property can sit empty about 1.2 months a "
-                    "year before it goes cash-flow negative. Above 100% it never covers "
-                    "its costs, even fully occupied.")
 
         self.reset_fields(keep_listing=False)
 
@@ -322,9 +316,14 @@ class RentalAnalyzerGUI(ttk.Frame):
                                       font=("TkDefaultFont", 13, "bold"), anchor="w",
                                       justify="left", wraplength=780)
         self.verdict_label.pack(fill="x")
-        banner.bind("<Configure>",
-                    lambda e: self.verdict_label.configure(wraplength=max(400, e.width - 20)))
-        self.metrics_label = tk.Label(banner, text="", font=MONO, anchor="w", justify="left")
+        def _rewrap(event) -> None:
+            width = max(400, event.width - 20)
+            self.verdict_label.configure(wraplength=width)
+            self.metrics_label.configure(wraplength=width)
+
+        banner.bind("<Configure>", _rewrap)
+        self.metrics_label = tk.Label(banner, text="", font=MONO, anchor="w", justify="left",
+                                      wraplength=780)
         self.metrics_label.pack(fill="x", pady=(2, 4))
 
         self.tabs = ttk.Notebook(parent)
@@ -545,7 +544,10 @@ class RentalAnalyzerGUI(ttk.Frame):
             min_cash_on_cash=(self.f_min_coc.get(8.0) or 0.0) / 100,
             min_irr=(self.f_min_irr.get(10.0) or 0.0) / 100,
             min_monthly_cash_flow=self.f_min_cf.get(0.0) or 0.0,
-            max_breakeven_occupancy=(self.f_max_breakeven.get(90.0) or 0.0) / 100,
+            # max_breakeven_occupancy is deliberately left unset: vacancy is
+            # already deducted in every metric, so screening on breakeven
+            # occupancy would flag the same weakness twice. It is reported as
+            # a reference number instead (see report.Thresholds).
         )
 
     # --- Actions --------------------------------------------------------
@@ -631,6 +633,7 @@ class RentalAnalyzerGUI(ttk.Frame):
             f"DSCR {result.dscr:4.2f}",
             f"IRR {((result.irr_with_equity or 0) * 100):5.2f}%",
             f"Cash flow {money(result.monthly_cash_flow)}/mo",
+            f"Breakeven occ {result.breakeven_occupancy * 100:5.1f}%",
             f"Cash in {money(result.total_cash_invested)}",
         ])
         self.metrics_label.configure(text=chips)
@@ -776,7 +779,7 @@ class RentalAnalyzerGUI(ttk.Frame):
             self.f_rent_growth: "3.0", self.f_exp_growth: "2.5", self.f_appreciation: "3.0",
             self.f_mgmt: "8", self.f_maint: "8", self.f_capex: "8", self.f_other: "0",
             self.f_min_dscr: "1.25", self.f_min_cap: "5.0", self.f_min_coc: "8.0",
-            self.f_min_irr: "10.0", self.f_min_cf: "0", self.f_max_breakeven: "90",
+            self.f_min_irr: "10.0", self.f_min_cf: "0",
         }
         for widget, value in defaults.items():
             widget.var.set(value)

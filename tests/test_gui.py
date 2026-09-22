@@ -120,6 +120,7 @@ class TestThresholdsAreAllExposed(unittest.TestCase):
         self.root.destroy()
 
     def test_every_threshold_field_is_driven_by_the_form(self):
+        """A threshold with no box behind it would be enforced invisibly."""
         import dataclasses
         from report import Thresholds
         defaults = Thresholds()
@@ -128,15 +129,19 @@ class TestThresholdsAreAllExposed(unittest.TestCase):
             self.assertEqual(getattr(from_form, field.name), getattr(defaults, field.name),
                              f"{field.name} is not wired to the form")
 
-    def test_cash_flow_and_breakeven_boxes_change_the_screen(self):
+    def test_cash_flow_box_changes_the_screen(self):
         from report import screen
         self.app.load_sample()
         checks = screen(self.app.result, self.app.thresholds_from_fields())
         self.assertEqual(checks["Monthly Cash Flow"], "FLAG")
-        self.assertEqual(checks["Breakeven Occupancy"], "FLAG")
-        # Loosen both: a landlord willing to feed the deal $300/mo.
+        # A landlord willing to feed the deal $300/mo.
         self.app.f_min_cf.var.set("-300")
-        self.app.f_max_breakeven.var.set("105")
         checks = screen(self.app.result, self.app.thresholds_from_fields())
         self.assertEqual(checks["Monthly Cash Flow"], "PASS")
-        self.assertEqual(checks["Breakeven Occupancy"], "PASS")
+
+    def test_breakeven_occupancy_is_reported_not_screened(self):
+        from report import screen
+        self.app.load_sample()
+        self.assertNotIn("Breakeven Occupancy", screen(self.app.result,
+                                                       self.app.thresholds_from_fields()))
+        self.assertIn("Breakeven occ", self.app.metrics_label.cget("text"))
