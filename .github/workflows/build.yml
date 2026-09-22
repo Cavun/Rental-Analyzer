@@ -1,0 +1,115 @@
+name: Build desktop app
+
+# Every merge into main runs the tests, then packages the GUI with PyInstaller
+# on a Windows runner and publishes RentalAnalyzer.exe as a release. Nothing to
+# do by hand. You can also kick a build off from the Actions tab (Run workflow).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write     # needed by the release job to create the release
+
+concurrency:
+  # A newer push to main supersedes an in-flight build of an older commit.
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run the suite
+        # Headless box: the widget tests skip themselves, the rest must pass.
+        run: python -m unittest discover -s tests -v
+
+  build:
+    name: Build (Windows)
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        # beautifulsoup4 must land in the SAME interpreter that runs
+        # PyInstaller, or the spec file's preflight check stops the build.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller
+
+      - name: Check the build interpreter can see the GUI toolkit
+        # PyInstaller bundles only what THIS Python can import. If tkinter is
+        # missing, the build still succeeds and ships an app that crashes on
+        # launch -- so fail here instead, where the message is readable.
+        run: python -c "import tkinter, bs4; print('tkinter', tkinter.TkVersion, '| bs4', bs4.__version__)"
+
+      - name: Build with PyInstaller
+        run: python -m PyInstaller --noconfirm --clean rental_analyzer.spec
+
+      - name: Check the .exe actually contains the GUI and the parser
+        # The app is a GUI, so it cannot be launched on a runner to prove it
+        # works. Read the bundle's own table of contents instead: a build that
+        # silently dropped tkinter or bs4 fails here rather than on the
+        # machine of whoever downloads it.
+        run: python .github/scripts/check_bundle.py dist/RentalAnalyzer.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RentalAnalyzer-windows
+          path: dist/RentalAnalyzer.exe
+          if-no-files-found: error
+          retention-days: 90
+
+  release:
+    name: Publish release
+    needs: build
+    # Only merges into main publish. PR builds stop at the artifact above.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the built app
+        uses: actions/download-artifact@v4
+        with:
+          name: RentalAnalyzer-windows
+          path: release
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="build-${{ github.run_number }}"
+          gh release create "$tag" release/RentalAnalyzer.exe \
+            --repo "${{ github.repository }}" \
+            --title "RentalAnalyzer $tag" \
+            --target "${{ github.sha }}" \
+            --latest \
+            --notes "Automated Windows build of \`${{ github.sha }}\`.
+
+          Download \`RentalAnalyzer.exe\` below and double-click it. No Python
+          needed on the machine that runs it. Windows SmartScreen will warn
+          about an unrecognised publisher the first time, because the build is
+          unsigned: *More info* > *Run anyway*.
+
+          Built from ${{ github.ref_name }} by [this workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
