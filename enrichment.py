@@ -21,6 +21,15 @@ gets wrong:
      residence exemption (~18 mills of school operating tax in MI). Using the
      seller's number is the single most common way a deal that doesn't work
      looks like it does.
+
+     Tax is therefore an OPTIONAL INPUT. If you have run the property through
+     Michigan's official estimator --
+
+         https://treas-secure.state.mi.us/ptestimator
+
+     -- pass that figure in (`enrich(..., property_tax_annual=4884)` or
+     `main.py --tax 4884`) and it is used verbatim, with no estimating at all.
+     Only when no figure is supplied does the estimate chain below run.
 """
 
 from __future__ import annotations
@@ -48,11 +57,15 @@ class EnrichmentAssumptions:
     insurance_old_home_surcharge: float = 0.15  # +15% if built before...
     insurance_old_home_year: int = 1960
 
-    # Post-transfer property tax.
+    # Post-transfer property tax. Only used when no verified figure is
+    # supplied -- see estimate_post_transfer_tax().
     uncap_taxable_to_sev: bool = True       # taxable value resets to SEV at sale
     non_homestead_mills_adder: float = 18.0  # MI school operating millage a rental owes
     fallback_tax_rate_pct_of_price: float = 0.015  # used only when tax data is missing
     tax_growth_note_mills_cap: float = 80.0  # sanity ceiling on implied millage
+
+    # Where to get a verified number instead of any estimate.
+    tax_estimator_url: str = "https://treas-secure.state.mi.us/ptestimator"
 
     # Operating expense ratios (share of effective gross income).
     management_pct: float = 0.08
@@ -67,6 +80,7 @@ class EnrichedListing:
     monthly_rent: float
     insurance_annual: float
     property_tax_annual: float          # the number used for underwriting
+    property_tax_source: str            # "provided" (verified) or "estimated"
     seller_property_tax_annual: Optional[float]
     hoa_monthly: float
     notes: List[str] = field(default_factory=list)
@@ -164,7 +178,16 @@ def estimate_post_transfer_tax(listing: ListingData,
 # --------------------------------------------------------------------------
 
 def enrich(listing: ListingData,
-           assumptions: Optional[EnrichmentAssumptions] = None) -> EnrichedListing:
+           assumptions: Optional[EnrichmentAssumptions] = None,
+           property_tax_annual: Optional[float] = None) -> EnrichedListing:
+    """
+    Layer assumptions onto a parsed listing.
+
+    property_tax_annual: a VERIFIED annual tax figure, e.g. from Michigan's
+        official estimator at https://treas-secure.state.mi.us/ptestimator.
+        When supplied it is used verbatim and no tax estimating happens.
+        When omitted, estimate_post_transfer_tax() fills it in.
+    """
     assumptions = assumptions or EnrichmentAssumptions()
     notes: List[str] = []
     warnings: List[str] = []
@@ -184,10 +207,34 @@ def enrich(listing: ListingData,
         ins_note += f", +{assumptions.insurance_old_home_surcharge:.0%} for pre-{assumptions.insurance_old_home_year} construction"
     notes.append(ins_note + ").")
 
-    tax, tax_note, tax_warning = estimate_post_transfer_tax(listing, assumptions)
-    notes.append(tax_note)
-    if tax_warning:
-        warnings.append(tax_warning)
+    if property_tax_annual is not None:
+        if property_tax_annual < 0:
+            raise ValueError("property_tax_annual cannot be negative")
+        tax = round(float(property_tax_annual), 2)
+        tax_source = "provided"
+        notes.append(
+            f"Property tax PROVIDED: ${tax:,.0f}/yr -- used verbatim, not estimated."
+        )
+        # Still show what the listing implied, so a typo or a stale estimator
+        # run stands out instead of quietly setting the whole underwrite.
+        estimated, estimate_note, _ = estimate_post_transfer_tax(listing, assumptions)
+        notes.append(f"(For contrast, the listing-derived estimate would be: {estimate_note})")
+        if estimated and abs(tax - estimated) > max(0.35 * estimated, 750):
+            warnings.append(
+                f"Provided tax ${tax:,.0f}/yr differs sharply from the listing-derived "
+                f"estimate ${estimated:,.0f}/yr. Worth a second look at the estimator "
+                "inputs (taxable value, homestead status, millage) before trusting either."
+            )
+    else:
+        tax, tax_note, tax_warning = estimate_post_transfer_tax(listing, assumptions)
+        tax_source = "estimated"
+        notes.append(tax_note)
+        notes.append(
+            "Tax is an ESTIMATE. For a verified figure, run the parcel through "
+            f"{assumptions.tax_estimator_url} and pass it back in with --tax."
+        )
+        if tax_warning:
+            warnings.append(tax_warning)
 
     hoa_monthly = listing.hoa_monthly
     if hoa_monthly is None:
@@ -215,6 +262,7 @@ def enrich(listing: ListingData,
         monthly_rent=round(rent, 2),
         insurance_annual=insurance,
         property_tax_annual=tax,
+        property_tax_source=tax_source,
         seller_property_tax_annual=listing.property_tax_annual,
         hoa_monthly=float(hoa_monthly),
         notes=notes,

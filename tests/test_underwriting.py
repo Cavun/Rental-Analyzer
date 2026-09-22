@@ -129,6 +129,43 @@ class TestEnrichment(unittest.TestCase):
                               taxable_value=100000, sev=100000, homestead_pct=0)
         self.assertAlmostEqual(enrich(listing).property_tax_annual, 3000, delta=1)
 
+    def test_provided_tax_is_used_verbatim(self):
+        """A verified figure (e.g. from the MI estimator) overrides every estimate."""
+        listing = ListingData(price=285000, property_tax_annual=1925,
+                              taxable_value=65737, sev=103300, homestead_pct=100)
+        enriched = enrich(listing, property_tax_annual=4312.55)
+        self.assertEqual(enriched.property_tax_annual, 4312.55)
+        self.assertEqual(enriched.property_tax_source, "provided")
+        self.assertTrue(any("PROVIDED" in n for n in enriched.notes))
+
+    def test_provided_tax_works_without_any_listing_tax_data(self):
+        enriched = enrich(ListingData(price=200000), property_tax_annual=3800)
+        self.assertEqual(enriched.property_tax_annual, 3800.0)
+        self.assertEqual(enriched.property_tax_source, "provided")
+
+    def test_provided_tax_far_from_estimate_warns(self):
+        listing = ListingData(price=285000, property_tax_annual=1925,
+                              taxable_value=65737, sev=103300, homestead_pct=100)
+        enriched = enrich(listing, property_tax_annual=9000)
+        self.assertTrue(any("differs sharply" in w for w in enriched.warnings))
+
+    def test_provided_tax_close_to_estimate_does_not_warn(self):
+        listing = ListingData(price=285000, property_tax_annual=1925,
+                              taxable_value=65737, sev=103300, homestead_pct=100)
+        enriched = enrich(listing, property_tax_annual=4750)
+        self.assertFalse(any("differs sharply" in w for w in enriched.warnings))
+
+    def test_negative_provided_tax_rejected(self):
+        with self.assertRaises(ValueError):
+            enrich(ListingData(price=200000), property_tax_annual=-1)
+
+    def test_omitted_tax_still_estimates_as_before(self):
+        listing = ListingData(price=285000, property_tax_annual=1925,
+                              taxable_value=65737, sev=103300, homestead_pct=100)
+        enriched = enrich(listing)
+        self.assertEqual(enriched.property_tax_source, "estimated")
+        self.assertAlmostEqual(enriched.property_tax_annual, 4884, delta=5)
+
     def test_missing_tax_data_falls_back_to_price(self):
         enriched = enrich(ListingData(price=200000))
         self.assertAlmostEqual(enriched.property_tax_annual, 3000, delta=1)

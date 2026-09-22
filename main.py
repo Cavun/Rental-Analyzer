@@ -68,7 +68,7 @@ def analyze(blob: str,
     if args and args.rent_pct is not None:
         assumptions.rent_pct_of_price = args.rent_pct
 
-    enriched = enrich(listing, assumptions)
+    enriched = enrich(listing, assumptions, property_tax_annual=(args.tax if args else None))
     if args and args.rent:
         enriched.monthly_rent = args.rent
         enriched.notes.append(f"Rent overridden on the command line: ${args.rent:,.0f}/mo.")
@@ -120,6 +120,7 @@ def print_single(blob: str, args: argparse.Namespace) -> None:
                 "monthly_rent": inputs.monthly_rent,
                 "insurance_annual": enriched.insurance_annual,
                 "property_tax_annual": enriched.property_tax_annual,
+                "property_tax_source": enriched.property_tax_source,
                 "seller_property_tax_annual": enriched.seller_property_tax_annual,
                 "down_payment_pct": inputs.down_payment_pct,
                 "interest_rate": inputs.interest_rate,
@@ -225,6 +226,10 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--price", type=float, help="Override the list price (e.g. your offer price).")
     g.add_argument("--rent", type=float, help="Override monthly rent with a real comp.")
     g.add_argument("--rent-pct", type=float, help="Rent as a share of price (default 0.01).")
+    g.add_argument("--tax", type=float, metavar="ANNUAL",
+                   help="Verified annual property tax in dollars, e.g. from "
+                        "https://treas-secure.state.mi.us/ptestimator. Used verbatim; "
+                        "omit it and the tax is estimated from the listing.")
     g.add_argument("--rate", type=float, help="Interest rate as a decimal (default 0.07).")
     g.add_argument("--down", type=float, help="Down payment share (default 0.20).")
     g.add_argument("--term", type=int, help="Loan term in years (default 30).")
@@ -258,6 +263,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         print_single(read_blob(args.sources[0]), args)
         return 0
 
+    if args.tax is not None:
+        print("Warning: --tax applies the same figure to every listing in a batch. "
+              "Tax is per-parcel; run listings one at a time to give each its own.",
+              file=sys.stderr)
     print_batch([(src, read_blob(src)) for src in args.sources], args)
     return 0
 

@@ -35,6 +35,7 @@ Common overrides:
 ```bash
 python3 main.py listing.html --price 265000  # underwrite your offer, not the ask
 python3 main.py listing.html --rent 1650     # a real rent comp beats the 1% rule
+python3 main.py listing.html --tax 4884      # a verified tax figure beats any estimate
 python3 main.py listing.html --rate 0.0665   # the rate you were actually quoted
 python3 main.py listing.html --min-coc 0.06  # loosen the screen
 ```
@@ -63,13 +64,30 @@ Fixed for every listing so deals stay comparable (all in
 *seller's* annual property tax. In Michigan — and in every state with an
 assessment cap or an owner-occupancy exemption — that number resets when the
 property sells. Taxable value uncaps to the SEV, and a rental loses the
-homestead exemption (~18 mills of school operating tax). `enrichment.py`
-backs out the implied millage from the seller's bill, adds the non-homestead
-adder, and applies it to the uncapped value.
+homestead exemption (~18 mills of school operating tax).
 
-On the sample listing that is **$2,184/yr stated → $5,245/yr actual**, a
-$255/month swing that turns a marginal deal into a losing one. The report
-always shows both numbers and underwrites the higher one.
+Because this number moves the deal more than any other expense, **tax is an
+optional input**. Run the parcel through Michigan's official estimator —
+<https://treas-secure.state.mi.us/ptestimator> — and pass the result in:
+
+```bash
+python3 main.py listing.html --tax 4884
+```
+
+It is then used verbatim, with no estimating at all. The report labels that
+line **VERIFIED (provided)**, still prints the listing-derived estimate
+alongside it for contrast, and warns if the two are more than ~35% apart —
+that gap usually means a wrong homestead flag or a stale taxable value in
+one of them.
+
+Omit `--tax` and the original estimate chain runs unchanged: back the implied
+millage out of the seller's bill, add the non-homestead adder, apply it to
+the uncapped (SEV) value, and fall back to a percentage of price only when
+the listing states no assessment data at all.
+
+On the sample listing the estimate is **$2,184/yr stated → $5,245/yr
+actual**, a $255/month swing that turns a marginal deal into a losing one.
+The report always shows both numbers and underwrites the higher one.
 
 **2. A cash-flow-only IRR undersells a forever hold; an appreciation-only one
 oversells it.** With no sale date, a pure cash-flow IRR ignores 30 years of
@@ -104,13 +122,13 @@ two misses, DSCR intact) · **PASS ON IT**.
 | File | Role |
 |---|---|
 | `extraction.py` | flexmls/Spark HTML → `ListingData`. Reads the `data-map--ldp-listing` JSON blob for core fields, walks `.listing-detail-field-line` pairs for the rest. Plain-text fallback for other templates. |
-| `enrichment.py` | Fills in what the listing omits: rent, insurance, and the post-transfer tax correction. Every value carries a note. |
+| `enrichment.py` | Fills in what the listing omits: rent, insurance, and the post-transfer tax correction. Accepts a verified tax figure via `property_tax_annual=` / `--tax`. Every value carries a note. |
 | `financial_engine.py` | All arithmetic. `PropertyInputs` → year-by-year projection, cap rate, CoC, DSCR, breakeven occupancy, IRR via self-contained Newton-Raphson (bisection fallback). No numpy. |
 | `sensitivity.py` | Grids: rent growth × vacancy, interest rate, rent level. Deep-copies the base inputs per run. |
 | `report.py` | Text report with PASS/FLAG markers and a fixed-width table renderer. |
 | `main.py` | CLI wiring: extract → enrich → finance → report → sensitivity. |
 | `sample_listing.py` | A realistic fabricated flexmls page so `python3 main.py` runs with no setup. |
-| `tests/` | `python3 -m unittest discover tests` — 30 tests over loan math, IRR, the tax correction, and grid isolation. |
+| `tests/` | `python3 -m unittest discover tests` — 36 tests over loan math, IRR, the tax input and correction, and grid isolation. |
 
 ## Extending it
 
@@ -125,6 +143,8 @@ two misses, DSCR intact) · **PASS ON IT**.
 
 ## Caveats
 
-This is a screening model, not an appraisal. Rent, insurance and
-post-transfer taxes are estimates. Verify rent against local comps and taxes
-with the county assessor before making an offer.
+This is a screening model, not an appraisal. Rent and insurance are always
+estimates, and so is tax unless you pass `--tax`. Verify rent against local
+comps, and get a real tax figure from the
+[state estimator](https://treas-secure.state.mi.us/ptestimator) or the county
+assessor before making an offer.

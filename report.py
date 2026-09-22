@@ -245,12 +245,16 @@ def format_report(result: UnderwritingResult,
     # --- Year 1 operations ----------------------------------------------
     y1 = result.years[0]
     exp = inputs.expenses
+    tax_note = "post-transfer estimate"
+    if enriched:
+        tax_note = ("VERIFIED (provided)" if enriched.property_tax_source == "provided"
+                    else "post-transfer estimate")
     out.append(_header("YEAR 1 OPERATIONS"))
     rows = [
         ["Gross scheduled rent", money(y1.gross_rent), money(inputs.monthly_rent) + "/mo"],
         [f"Vacancy ({pct(inputs.vacancy_rate, 1)})", "-" + money(y1.vacancy_loss), ""],
         ["Effective gross income", money(y1.effective_gross_income), ""],
-        ["Property tax", "-" + money(exp.property_tax_annual), "post-transfer estimate"],
+        ["Property tax", "-" + money(exp.property_tax_annual), tax_note],
         ["Insurance", "-" + money(exp.insurance_annual), ""],
         ["HOA", "-" + money(exp.hoa_annual), ""],
         [f"Management ({pct(exp.management_pct, 0)})", "-" + money(y1.effective_gross_income * exp.management_pct), ""],
@@ -315,9 +319,11 @@ def format_report(result: UnderwritingResult,
         for note in enriched.notes:
             out.append(_wrap("* " + note))
         if enriched.seller_property_tax_annual:
+            source = ("a figure you provided" if enriched.property_tax_source == "provided"
+                      else "the estimate above")
             out.append(_wrap(
                 f"* Seller's stated annual tax: {money(enriched.seller_property_tax_annual)}. "
-                f"Underwritten at {money(inputs.expenses.property_tax_annual)}."
+                f"Underwritten at {money(inputs.expenses.property_tax_annual)} from {source}."
             ))
         if enriched.warnings:
             out.append(_header("WARNINGS"))
