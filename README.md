@@ -136,7 +136,7 @@ Fixed for every listing so deals stay comparable (all in
 | Exit cap rate | Year-1 cap rate + 0.50% |
 | Hold period | Forever — projected over the full 30-year loan term |
 | Management / maintenance / capex reserve | 0% (self-managed) / 8% / 8% of effective gross income |
-| Rent growth / expense growth / appreciation | 3% / 2.5% / 3% |
+| Rent growth / expense growth / appreciation | 3% / 1.25% / 3% |
 
 ## Four things this gets right that a naive read does not
 
@@ -231,23 +231,44 @@ the range for a genuine forever hold.
 
 ## Screening thresholds
 
-Defaults (tunable via `report.Thresholds` or the `--min-*` flags):
+Every threshold has a **number and a switch**. The switch decides whether the
+test is enforced at all; an unswitched metric is still computed and printed,
+it just cannot fail the deal (its Result column reads `off`). A bar you are
+not actually underwriting to should not be inflating the missed-threshold
+count.
 
-| Metric | Bar |
-|---|---|
-| DSCR | ≥ 1.25 |
-| Cap rate | ≥ 5% |
-| Cash-on-cash | ≥ 8% |
-| IRR (lower of the two exits) | ≥ 10% |
-| Monthly cash flow | ≥ $0 |
-| After-tax IRR | off by default |
+| Metric | Bar | On by default? |
+|---|---|---|
+| DSCR | ≥ 1.25 | no |
+| Cap rate | ≥ 5% | no |
+| Cash-on-cash | ≥ 8% | **yes** |
+| IRR (lower of the two exits) | ≥ 10% | no |
+| Monthly cash flow | ≥ $0 | **yes** |
+| After-tax IRR | ≥ 6% | no |
+| Breakeven occupancy | ≤ 85% | no |
 
-All of these are **year 1, lease-up included**. Every threshold has a box in
-the GUI; the CLI exposes the first three as `--min-*` flags and takes the
-rest from `report.Thresholds`.
+Only the two tests that describe money in your pocket start on. DSCR, cap
+rate and IRR are comparison numbers first: which of them is a hard bar
+depends on how you are financing and how long you are holding, so you switch
+them on deliberately.
+
+All of these are **year 1, lease-up included**. In the GUI every bar is a
+tick box beside its number (the number stays put when you untick it, so a bar
+you switch off and back on comes back as you left it). On the CLI:
+
+```bash
+python3 main.py listing.html --screen coc cf dscr    # screen on exactly these
+python3 main.py listing.html --screen cf             # cash flow and nothing else
+python3 main.py listing.html --min-irr 0.12 --screen irr coc
+```
+
+`--screen` replaces the default set outright rather than adding to it, which
+is the only reading that lets you turn the two defaults off from a command
+line. With every test switched off the verdict reads **NOT SCREENED** rather
+than PASS — nothing was judged, so nothing passed.
 
 **After-tax IRR is reported, not screened,** unless you set
-`Thresholds.min_after_tax_irr` or fill the GUI box. It depends on your
+`Thresholds.min_after_tax_irr` or tick the GUI box. It depends on your
 bracket and your other passive income, so it is a personal number rather
 than a property one.
 
@@ -261,10 +282,40 @@ use it as a genuine stress test, set `Thresholds.max_breakeven_occupancy`
 *tighter* than your assumed occupancy (e.g. 0.85 with a 1-month vacancy
 assumption: "does this still work if vacancy doubles?").
 
-Verdicts: **PASS** (clears every threshold — worth a closer look) ·
-**MARGINAL** (one or two misses, DSCR intact) · **FAIL** (anything worse, or
-any DSCR miss). PASS means the listing cleared the screen; a listing that
-misses thresholds reads FAIL, never "pass".
+### The cash-flow asterisk
+
+Year 1 carries the lease-up months and the first-year repair bump, and neither
+comes back. A deal that misses the cash-flow bar in year 1 and clears it every
+year after is a timing problem, not a pricing one, so it reads **PASS\*** on
+the screen rather than FAIL:
+
+```
+Monthly cash flow        -$172      >= $0   PASS*
+
+  * Monthly cash flow misses in YEAR 1 ONLY: -$172/mo against a $0/mo bar,
+  lease-up included. It clears from year 2 ($44/mo) and stays clear for the
+  rest of the hold, so the miss is timing, not pricing. It still costs you
+  $2,062 out of pocket across the first twelve months -- money you need in the
+  bank before you close, not money the deal lends you.
+```
+
+The asterisk is strict on both halves. **Every** later year of the hold must
+clear the bar, not just year 2: a deal that dips back under mid-hold (expenses
+outrunning rent) gets a plain FAIL, because calling that lease-up would be
+flattering it. And it is measured against *your* bar, not against $0 — set the
+bar at $500/mo and a year 2 that makes $44/mo is simply a miss.
+
+A PASS\* is not a clean pass. It says the price is defensible and you need
+cash in the bank, so the out-of-pocket figure travels with it everywhere: the
+report footnote, the GUI banner (in caution yellow, not green) and the `PASS*`
+cell in the comparison table.
+
+Verdicts: **PASS** (clears every threshold it is screened on — worth a closer
+look) · **MARGINAL** (one or two misses, DSCR intact) · **FAIL** (anything
+worse, or any DSCR miss) · **NOT SCREENED** (every switch off). A PASS that
+rests on the cash-flow asterisk says so on the verdict line. PASS means the
+listing cleared the screen; a listing that misses thresholds reads FAIL, never
+"pass".
 
 ## Layout
 

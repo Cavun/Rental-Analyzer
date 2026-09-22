@@ -33,8 +33,9 @@ from financial_engine import (  # noqa: E402
     project,
     underwrite,
 )
-from report import (Thresholds, format_report, screen, render_table,  # noqa: E402
-                    verdict)
+from report import (OFF, PASS_LATER, Thresholds,  # noqa: E402
+                    cash_flow_asterisk_note, cash_flow_clears_later, format_report,
+                    one_line_summary, render_table, screen, verdict)
 from sample_listing import SAMPLE_LISTING_HTML  # noqa: E402
 from sensitivity import (  # noqa: E402
     RENT_LEVEL_DELTAS,
@@ -433,7 +434,8 @@ class TestYearOnePessimism(unittest.TestCase):
         result = underwrite(make_inputs(purchase_price=200000, monthly_rent=1700,
                                         lease_up_months=3))
         self.assertLess(result.dscr, result.stabilized_dscr)
-        checks = screen(result, Thresholds(min_dscr=result.stabilized_dscr - 0.01))
+        checks = screen(result, Thresholds(min_dscr=result.stabilized_dscr - 0.01,
+                                           screen_dscr=True))
         self.assertEqual(checks["DSCR"], "FAIL")
 
     def test_report_labels_year_one_and_shows_stabilized(self):
@@ -642,7 +644,7 @@ class TestReport(unittest.TestCase):
             purchase_price=400000, monthly_rent=1500,
             expenses=OperatingExpenses(property_tax_annual=8000, insurance_annual=2000),
         ))
-        checks = screen(result, Thresholds())
+        checks = screen(result, Thresholds(screen_dscr=True))
         self.assertEqual(checks["DSCR"], "FAIL")
         self.assertEqual(checks["Cash-on-Cash"], "FAIL")
 
@@ -687,7 +689,7 @@ class TestReport(unittest.TestCase):
             purchase_price=120000, monthly_rent=1800,
             expenses=OperatingExpenses(property_tax_annual=1500, insurance_annual=900),
         ))
-        checks = screen(result, Thresholds())
+        checks = screen(result, Thresholds(screen_dscr=True))
         self.assertEqual(checks["DSCR"], "PASS")
         self.assertEqual(checks["Cash-on-Cash"], "PASS")
 
@@ -701,6 +703,120 @@ class TestReport(unittest.TestCase):
         text = format_report(underwrite(to_property_inputs(enriched)), enriched, Thresholds())
         for phrase in ("screening heuristic", "Rent assumed at", "1% of price"):
             self.assertNotIn(phrase, text)
+
+
+class TestThresholdSwitches(unittest.TestCase):
+    """A threshold is only enforced when its switch is on."""
+
+    def setUp(self):
+        # A deal weak enough to miss every bar, so an absent check can only
+        # mean "switched off", never "passed".
+        self.result = underwrite(PropertyInputs(
+            purchase_price=400000, monthly_rent=1500,
+            expenses=OperatingExpenses(property_tax_annual=8000, insurance_annual=2000),
+        ))
+
+    def test_only_the_two_cash_tests_are_on_by_default(self):
+        self.assertEqual(set(screen(self.result, Thresholds())),
+                         {"Cash-on-Cash", "Monthly Cash Flow"})
+
+    def test_switching_one_on_adds_exactly_that_check(self):
+        checks = screen(self.result, Thresholds(screen_irr=True))
+        self.assertIn("IRR", checks)
+        self.assertNotIn("DSCR", checks)
+
+    def test_switching_one_off_removes_it_from_the_miss_count(self):
+        both = screen(self.result, Thresholds())
+        self.assertEqual(sum(1 for v in both.values() if v == "FAIL"), 2)
+        one = screen(self.result, Thresholds(screen_cash_on_cash=False))
+        self.assertEqual(sum(1 for v in one.values() if v == "FAIL"), 1)
+
+    def test_an_off_threshold_is_still_reported(self):
+        """Switched off means not judged -- it does not mean hidden."""
+        text = format_report(self.result, None, Thresholds(), projection_years=0)
+        self.assertIn("DSCR", text)
+        self.assertIn(OFF, text)
+
+    def test_everything_off_is_not_a_pass(self):
+        t = Thresholds(screen_cash_on_cash=False, screen_monthly_cash_flow=False)
+        self.assertEqual(screen(self.result, t), {})
+        self.assertTrue(verdict(screen(self.result, t)).startswith("NOT SCREENED"))
+        self.assertEqual(one_line_summary(self.result, t)[-1], OFF)
+
+
+class TestYearOneOnlyCashFlowMiss(unittest.TestCase):
+    """A miss year 1 owns alone passes with an asterisk, not a FAIL."""
+
+    def setUp(self):
+        # Lease-up drags year 1 under $0; every later year clears.
+        self.result = underwrite(make_inputs(purchase_price=239900, monthly_rent=2400,
+                                             expenses=OperatingExpenses(
+                                                 property_tax_annual=5245,
+                                                 insurance_annual=1655)))
+        self.assertLess(self.result.monthly_cash_flow, 0)
+        self.assertGreater(self.result.years[1].cash_flow, 0)
+
+    def test_screen_marks_it_rather_than_failing_it(self):
+        self.assertEqual(screen(self.result, Thresholds())["Monthly Cash Flow"],
+                         PASS_LATER)
+
+    def test_it_does_not_count_as_a_missed_threshold(self):
+        t = Thresholds(screen_cash_on_cash=False)
+        self.assertTrue(verdict(screen(self.result, t)).startswith("PASS"))
+        self.assertIn("year 2", verdict(screen(self.result, t)))
+
+    def test_the_note_names_the_year_it_clears_and_the_cash_to_carry_it(self):
+        later = cash_flow_clears_later(self.result, Thresholds())
+        self.assertEqual(later.first_clear_year, 2)
+        self.assertGreater(later.first_clear_monthly, 0)
+        self.assertAlmostEqual(later.year1_out_of_pocket,
+                               -self.result.year1_cash_flow, places=6)
+        text = "\n".join(cash_flow_asterisk_note(self.result, Thresholds()))
+        self.assertIn("YEAR 1 ONLY", text)
+        self.assertIn("out of pocket", text)
+
+    def test_the_note_reaches_the_report(self):
+        text = format_report(self.result, None, Thresholds(), projection_years=0)
+        self.assertIn(PASS_LATER, text)
+        self.assertIn("YEAR 1 ONLY", text)
+
+    def test_the_batch_row_carries_the_asterisk(self):
+        row = one_line_summary(self.result, Thresholds(screen_cash_on_cash=False))
+        self.assertEqual(row[-1], PASS_LATER)
+
+    def test_a_deal_that_never_clears_still_fails(self):
+        """The asterisk is for timing. A deal priced wrong does not get one."""
+        result = underwrite(PropertyInputs(
+            purchase_price=400000, monthly_rent=1500,
+            expenses=OperatingExpenses(property_tax_annual=8000, insurance_annual=2000),
+        ))
+        self.assertIsNone(cash_flow_clears_later(result, Thresholds()))
+        self.assertEqual(screen(result, Thresholds())["Monthly Cash Flow"], "FAIL")
+        self.assertEqual(cash_flow_asterisk_note(result, Thresholds()), [])
+
+    def test_a_later_dip_back_under_the_bar_forfeits_the_asterisk(self):
+        """Every year after the first must clear, not just the next one."""
+        # Expenses outrun rent, so the deal clears year 2 and then crosses
+        # back under mid-hold.
+        result = underwrite(make_inputs(purchase_price=239900, monthly_rent=2500,
+                                        rent_growth=0.01, expense_growth=0.05,
+                                        expenses=OperatingExpenses(
+                                            property_tax_annual=5245,
+                                            insurance_annual=1655)))
+        self.assertLess(result.monthly_cash_flow, 0)
+        self.assertGreater(result.years[1].cash_flow, 0)
+        self.assertLess(result.years[-1].cash_flow, 0)
+        self.assertIsNone(cash_flow_clears_later(result, Thresholds()))
+
+    def test_it_is_measured_against_your_bar_not_against_zero(self):
+        """A positive bar year 2 cannot clear is a plain miss, not an asterisk."""
+        t = Thresholds(min_monthly_cash_flow=500)
+        self.assertIsNone(cash_flow_clears_later(self.result, t))
+        self.assertEqual(screen(self.result, t)["Monthly Cash Flow"], "FAIL")
+
+    def test_no_note_when_the_cash_flow_test_is_switched_off(self):
+        t = Thresholds(screen_monthly_cash_flow=False)
+        self.assertEqual(cash_flow_asterisk_note(self.result, t), [])
 
 
 class TestPackagingFallbacks(unittest.TestCase):

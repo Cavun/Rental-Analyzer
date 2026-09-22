@@ -18,18 +18,39 @@ from financial_engine import UnderwritingResult
 
 PASS = "PASS"
 FAIL = "FAIL"
+OFF = "off"        # the test is switched off: reported, not screened
+PASS_LATER = "PASS*"   # misses in year 1 only, and clears every year after
 WIDTH = 78
 
 
 @dataclass
 class Thresholds:
-    """Screening bar. Tighten or loosen per market."""
+    """
+    Screening bar. Tighten or loosen per market.
+
+    Each test has a number AND a switch. The switch is what decides whether
+    the test is enforced at all: a bar you are not actually underwriting to
+    should not be inflating the missed-threshold count, and a metric you do
+    not screen on is still reported, so nothing is hidden by turning one off.
+
+    Only the two tests that describe money in your pocket are on by default --
+    cash-on-cash and monthly cash flow. DSCR, cap rate and IRR are off until
+    you turn them on: they are comparison numbers first, and which of them is
+    a hard bar depends on how you are financing and how long you are holding.
+    """
 
     min_dscr: float = 1.25
     min_cap_rate: float = 0.05
     min_cash_on_cash: float = 0.08
     min_irr: float = 0.10
     min_monthly_cash_flow: float = 0.0
+
+    # The switches. Off by default except the two cash tests.
+    screen_dscr: bool = False
+    screen_cap_rate: bool = False
+    screen_cash_on_cash: bool = True
+    screen_irr: bool = False
+    screen_monthly_cash_flow: bool = True
 
     # Off by default. The after-tax layer is reported, not screened, unless
     # you deliberately turn this on: after-tax return depends on YOUR bracket
@@ -182,6 +203,76 @@ def render_grid(grid) -> str:
 # The underwriting report
 # --------------------------------------------------------------------------
 
+@dataclass
+class LeaseUpCashFlow:
+    """
+    The asterisk case: year-1 cash flow misses the bar, every later year of
+    the hold clears it.
+
+    That is a timing problem, not a pricing one -- lease-up and first-year
+    repairs are charged to year 1 and never come back -- so it passes with a
+    mark rather than failing outright. What it costs you is real money in the
+    first twelve months, which is why the out-of-pocket figure travels with
+    it.
+    """
+
+    threshold: float            # dollars/month the deal had to clear
+    year1_monthly: float        # what year 1 actually makes, per month
+    first_clear_year: int       # first year that clears (2 in the usual case)
+    first_clear_monthly: float  # what that year makes, per month
+    year1_out_of_pocket: float  # dollars you feed the deal across year 1
+
+
+def cash_flow_clears_later(result: UnderwritingResult,
+                           thresholds: Optional[Thresholds] = None
+                           ) -> Optional[LeaseUpCashFlow]:
+    """
+    Describe a year-1-only cash-flow miss, or None when there isn't one.
+
+    Every year after the first must clear the bar, not just the next one: a
+    deal that dips back under later is not a lease-up problem, and saying so
+    with an asterisk would be flattering it.
+    """
+    t = thresholds or Thresholds()
+    bar = t.min_monthly_cash_flow
+    if result.monthly_cash_flow >= bar:
+        return None
+    later = result.years[1:]
+    if not later or any(y.cash_flow / 12 < bar for y in later):
+        return None
+    first = later[0]
+    return LeaseUpCashFlow(
+        threshold=bar,
+        year1_monthly=result.monthly_cash_flow,
+        first_clear_year=first.year,
+        first_clear_monthly=first.cash_flow / 12,
+        # What you actually feed it: money out of pocket, not the distance to
+        # a bar you set above zero.
+        year1_out_of_pocket=max(0.0, -result.year1_cash_flow),
+    )
+
+
+def cash_flow_asterisk_note(result: UnderwritingResult,
+                            thresholds: Optional[Thresholds] = None) -> List[str]:
+    """The footnote behind a PASS* on cash flow. Empty when there isn't one."""
+    t = thresholds or Thresholds()
+    if not t.screen_monthly_cash_flow:
+        return []
+    later = cash_flow_clears_later(result, t)
+    if later is None:
+        return []
+    note = (f"* Monthly cash flow misses in YEAR 1 ONLY: {money(later.year1_monthly)}/mo "
+            f"against a {money(later.threshold)}/mo bar, lease-up included. It clears "
+            f"from year {later.first_clear_year} ({money(later.first_clear_monthly)}/mo) "
+            f"and stays clear for the rest of the hold, so the miss is timing, not "
+            f"pricing.")
+    if later.year1_out_of_pocket > 0:
+        note += (f" It still costs you {money(later.year1_out_of_pocket)} out of pocket "
+                 f"across the first twelve months -- money you need in the bank before "
+                 f"you close, not money the deal lends you.")
+    return ["", _wrap(note)]
+
+
 def screen(result: UnderwritingResult,
            thresholds: Optional[Thresholds] = None,
            after_tax=None) -> Dict[str, str]:
@@ -197,13 +288,22 @@ def screen(result: UnderwritingResult,
     cap-rate-based exits.
     """
     t = thresholds or Thresholds()
-    checks = {
-        "DSCR": _check(result.dscr, t.min_dscr),
-        "Cap Rate": _check(result.cap_rate, t.min_cap_rate),
-        "Cash-on-Cash": _check(result.cash_on_cash, t.min_cash_on_cash),
-        "IRR": _check(result.irr_screened, t.min_irr),
-        "Monthly Cash Flow": _check(result.monthly_cash_flow, t.min_monthly_cash_flow),
-    }
+    checks: Dict[str, str] = {}
+    if t.screen_dscr:
+        checks["DSCR"] = _check(result.dscr, t.min_dscr)
+    if t.screen_cap_rate:
+        checks["Cap Rate"] = _check(result.cap_rate, t.min_cap_rate)
+    if t.screen_cash_on_cash:
+        checks["Cash-on-Cash"] = _check(result.cash_on_cash, t.min_cash_on_cash)
+    if t.screen_irr:
+        checks["IRR"] = _check(result.irr_screened, t.min_irr)
+    if t.screen_monthly_cash_flow:
+        status = _check(result.monthly_cash_flow, t.min_monthly_cash_flow)
+        # A miss that year 1 owns alone -- lease-up, first-year repairs --
+        # passes with an asterisk instead of failing: see LeaseUpCashFlow.
+        if status == FAIL and cash_flow_clears_later(result, t) is not None:
+            status = PASS_LATER
+        checks["Monthly Cash Flow"] = status
     if t.max_breakeven_occupancy is not None:
         checks["Breakeven Occupancy"] = _check_max(
             result.breakeven_occupancy, t.max_breakeven_occupancy)
@@ -213,12 +313,20 @@ def screen(result: UnderwritingResult,
 
 
 def verdict(checks: Dict[str, str]) -> str:
+    if not checks:
+        return ("NOT SCREENED -- every threshold is switched off; "
+                "the metrics below are reported, not judged.")
     missed = [k for k, v in checks.items() if v == FAIL]
+    starred = " (cash flow clears from year 2 only -- see the note)" if any(
+        v == PASS_LATER for v in checks.values()) else ""
     if not missed:
-        return "PASS -- clears every screening threshold; worth a closer look."
+        return ("PASS -- clears every screening threshold; worth a closer look."
+                + starred)
     if len(missed) <= 2 and "DSCR" not in missed:
-        return f"MARGINAL -- {len(missed)} threshold(s) missed: {', '.join(missed)}."
-    return f"FAIL -- {len(missed)} threshold(s) missed: {', '.join(missed)}."
+        return (f"MARGINAL -- {len(missed)} threshold(s) missed: "
+                f"{', '.join(missed)}." + starred)
+    return (f"FAIL -- {len(missed)} threshold(s) missed: {', '.join(missed)}."
+            + starred)
 
 
 def format_report(result: UnderwritingResult,
@@ -316,14 +424,19 @@ def format_report(result: UnderwritingResult,
     # --- Screening ------------------------------------------------------
     checks = screen(result, t, after_tax)
     out.append(_header("SCREENING -- YEAR 1 (incl. lease-up)"))
+    # Every metric is listed whether or not it is screened: a switched-off
+    # test still tells you something, it just does not fail the deal. "off"
+    # in the Result column is the honest way to say so.
     rows = [
-        ["DSCR", ratio(result.dscr), f">= {t.min_dscr:.2f}", checks["DSCR"]],
-        ["Cap rate", pct(result.cap_rate), f">= {pct(t.min_cap_rate, 0)}", checks["Cap Rate"]],
-        ["Cash-on-cash", pct(result.cash_on_cash), f">= {pct(t.min_cash_on_cash, 0)}", checks["Cash-on-Cash"]],
+        ["DSCR", ratio(result.dscr), f">= {t.min_dscr:.2f}", checks.get("DSCR", OFF)],
+        ["Cap rate", pct(result.cap_rate), f">= {pct(t.min_cap_rate, 0)}",
+         checks.get("Cap Rate", OFF)],
+        ["Cash-on-cash", pct(result.cash_on_cash), f">= {pct(t.min_cash_on_cash, 0)}",
+         checks.get("Cash-on-Cash", OFF)],
         [f"IRR ({result.horizon}yr, lower exit)", pct(result.irr_screened),
-         f">= {pct(t.min_irr, 0)}", checks["IRR"]],
+         f">= {pct(t.min_irr, 0)}", checks.get("IRR", OFF)],
         ["Monthly cash flow", money(result.monthly_cash_flow),
-         f">= {money(t.min_monthly_cash_flow)}", checks["Monthly Cash Flow"]],
+         f">= {money(t.min_monthly_cash_flow)}", checks.get("Monthly Cash Flow", OFF)],
     ]
     if "Breakeven Occupancy" in checks:
         rows.append(["Breakeven occupancy", pct(result.breakeven_occupancy, 1),
@@ -332,6 +445,7 @@ def format_report(result: UnderwritingResult,
         rows.append([f"After-tax IRR ({result.horizon}yr)", pct(after_tax.irr_screened),
                      f">= {pct(t.min_after_tax_irr, 0)}", checks["After-tax IRR"]])
     out.append(render_table(["Metric", "Value", "Threshold", "Result"], rows))
+    out.extend(cash_flow_asterisk_note(result, t))
 
     # --- Stabilized reference -------------------------------------------
     # A deal that misses only because of lease-up is a timing problem you can
@@ -558,6 +672,14 @@ def one_line_summary(result: UnderwritingResult,
     """Row for the batch-mode comparison table."""
     checks = screen(result, thresholds)
     missed = sum(1 for v in checks.values() if v == FAIL)
+    if not checks:
+        screened = OFF
+    elif missed:
+        screened = f"{FAIL} x{missed}"
+    else:
+        # The asterisk rides along: a deal that only clears from year 2 is
+        # not the same row as one that clears from day one.
+        screened = PASS_LATER if PASS_LATER in checks.values() else PASS
     return [
         (label or result.inputs.label or "?")[:34],
         money(result.inputs.purchase_price),
@@ -567,7 +689,7 @@ def one_line_summary(result: UnderwritingResult,
         ratio(result.dscr),
         pct(result.irr_screened, 1),
         money(result.monthly_cash_flow),
-        PASS if missed == 0 else f"{FAIL} x{missed}",
+        screened,
     ]
 
 
