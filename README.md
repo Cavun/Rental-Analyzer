@@ -96,7 +96,7 @@ Fixed for every listing so deals stay comparable (all in
 | Monthly rent | 1% of purchase price |
 | Vacancy | 1 month/year (8.33%) |
 | Hold period | Forever — projected over the full 30-year loan term |
-| Management / maintenance / capex reserve | 8% / 8% / 8% of effective gross income |
+| Management / maintenance / capex reserve | 0% (self-managed) / 8% / 8% of effective gross income |
 | Rent growth / expense growth / appreciation | 3% / 2.5% / 3% |
 
 ## Three things this gets right that a naive read does not
