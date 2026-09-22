@@ -338,7 +338,88 @@ class TestThresholdsAreAllExposed(GUITestCase):
         self.load_and_fill()
         self.assertNotIn("Breakeven Occupancy", screen(self.app.result,
                                                        self.app.thresholds_from_fields()))
-        self.assertIn("Breakeven occ", self.app.metrics_label.cget("text"))
+        # Off the screen, so it is out of the banner -- but the full report
+        # still carries it.
+        self.assertNotIn("Breakeven occ", self.app.metrics_label.cget("text"))
+        self.assertIn("Breakeven occupancy", self.app.txt_report.get("1.0", "end"))
+
+
+@unittest.skipUnless(HAS_TK and HAS_DISPLAY, "needs tkinter and a display")
+class TestBannerShowsOnlyEnabledThresholds(GUITestCase):
+    """The banner summarises the bars you screen on, not every metric."""
+
+    def _banner(self):
+        return self.app.metrics_label.cget("text")
+
+    def test_a_fresh_form_shows_only_the_two_cash_metrics(self):
+        self.load_and_fill()
+        text = self._banner()
+        for shown in ("CoC", "Cash flow", "Cash in"):
+            self.assertIn(shown, text)
+        for hidden in ("Cap ", "DSCR", "IRR", "Breakeven occ"):
+            self.assertNotIn(hidden, text)
+
+    def test_ticking_a_box_puts_that_metric_in_the_banner(self):
+        self.load_and_fill()
+        self.assertNotIn("DSCR", self._banner())
+        self.app.f_min_dscr.set_on(True)
+        self.app.underwrite()
+        self.assertIn("DSCR", self._banner())
+
+    def test_unticking_a_box_takes_that_metric_out(self):
+        self.load_and_fill()
+        self.assertIn("CoC", self._banner())
+        self.app.f_min_coc.set_on(False)
+        self.app.underwrite()
+        self.assertNotIn("CoC", self._banner())
+
+    def test_breakeven_occupancy_appears_once_screened(self):
+        self.load_and_fill()
+        self.app.f_max_be_occ.set_on(True)
+        self.app.underwrite()
+        self.assertIn("Breakeven occ", self._banner())
+
+    def test_after_tax_irr_appears_only_when_screened(self):
+        self.load_and_fill()
+        def after_tax_line():
+            return "".join(ln for ln in self._banner().splitlines()
+                           if ln.startswith("After tax"))
+        # Cash flow is screened by default, so the line is there -- without IRR.
+        self.assertIn("Year-1 CF", after_tax_line())
+        self.assertNotIn("IRR", after_tax_line())
+        self.app.f_min_at_irr.set_on(True)
+        self.app.underwrite()
+        self.assertIn("IRR", after_tax_line())
+
+    def test_cash_in_survives_every_box_being_unticked(self):
+        """Cash in is not a threshold -- you write the cheque regardless."""
+        self.load_and_fill()
+        for widget in (self.app.f_min_coc, self.app.f_min_cf):
+            widget.set_on(False)
+        self.app.underwrite()
+        self.assertIn("Cash in", self._banner())
+
+    def test_with_nothing_screened_every_metric_is_reported(self):
+        """Verdict says reported-not-judged, so the banner reports the lot."""
+        self.load_and_fill()
+        for widget in (self.app.f_min_coc, self.app.f_min_cf, self.app.f_min_dscr,
+                       self.app.f_min_cap, self.app.f_min_irr, self.app.f_min_at_irr,
+                       self.app.f_max_be_occ):
+            widget.set_on(False)
+        self.app.underwrite()
+        text = self._banner()
+        for shown in ("Cap ", "CoC", "DSCR", "IRR", "Cash flow", "Breakeven occ",
+                      "Cash in"):
+            self.assertIn(shown, text)
+
+    def test_stabilized_line_follows_the_same_switches(self):
+        self.load_and_fill()
+        line = [ln for ln in self._banner().splitlines()
+                if ln.startswith("Stabilized")]
+        self.assertTrue(line)
+        self.assertIn("CoC", line[0])
+        self.assertIn("Cash flow", line[0])
+        self.assertNotIn("DSCR", line[0])
 
 
 @unittest.skipUnless(HAS_TK and HAS_DISPLAY, "needs tkinter and a display")

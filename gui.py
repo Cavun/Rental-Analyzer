@@ -853,27 +853,75 @@ class RentalAnalyzerGUI(ttk.Frame):
         elif text.startswith(("MARGINAL", "NOT SCREENED")):
             color = WARN_COLOR
         self.verdict_label.configure(text=text, foreground=color)
-        chips = "Year 1 (incl. lease-up):   " + "   ".join([
-            f"Cap {result.cap_rate * 100:5.2f}%",
-            f"CoC {result.cash_on_cash * 100:6.2f}%",
-            f"DSCR {result.dscr:4.2f}",
-            f"IRR {((result.irr_screened or 0) * 100):5.2f}%",
-            f"Cash flow {money(result.monthly_cash_flow)}/mo",
-            f"Breakeven occ {result.breakeven_occupancy * 100:5.1f}%",
-            f"Cash in {money(result.total_cash_invested)}",
-        ])
-        if result.multiple_irr_possible:
+        self.metrics_label.configure(text=self._banner_metrics(result, thresholds))
+
+    def _banner_metrics(self, result: UnderwritingResult, t: Thresholds) -> str:
+        """
+        The banner summarises what you are SCREENING ON, not every number the
+        model produces: a metric whose switch is off is not a bar this deal
+        has to clear, so it does not belong in the one-glance verdict line.
+        The full report still carries all of them.
+
+        With every switch off nothing would be left to show, so that case
+        falls back to the whole set -- matching the "reported, not judged"
+        verdict.
+        """
+        show = {
+            "cap": t.screen_cap_rate,
+            "coc": t.screen_cash_on_cash,
+            "dscr": t.screen_dscr,
+            "irr": t.screen_irr,
+            "cf": t.screen_monthly_cash_flow,
+            "occ": t.max_breakeven_occupancy is not None,
+            "atirr": t.min_after_tax_irr is not None,
+        }
+        if not any(show.values()):
+            show = {k: True for k in show}
+
+        year1 = []
+        if show["cap"]:
+            year1.append(f"Cap {result.cap_rate * 100:5.2f}%")
+        if show["coc"]:
+            year1.append(f"CoC {result.cash_on_cash * 100:6.2f}%")
+        if show["dscr"]:
+            year1.append(f"DSCR {result.dscr:4.2f}")
+        if show["irr"]:
+            year1.append(f"IRR {((result.irr_screened or 0) * 100):5.2f}%")
+        if show["cf"]:
+            year1.append(f"Cash flow {money(result.monthly_cash_flow)}/mo")
+        if show["occ"]:
+            year1.append(f"Breakeven occ {result.breakeven_occupancy * 100:5.1f}%")
+        # Cash in is not a threshold: it is the cheque you write, and you need
+        # it whatever you screen on, so it always shows.
+        year1.append(f"Cash in {money(result.total_cash_invested)}")
+
+        chips = "Year 1 (incl. lease-up):   " + "   ".join(year1)
+        # The caveat is about the IRR figure, so it rides with it.
+        if result.multiple_irr_possible and (show["irr"] or show["atirr"]):
             chips += "   (multiple IRRs possible)"
+
+        stabilized = []
         if result.stabilized_dscr is not None:
-            chips += ("\nStabilized (year 2):      "
-                      f"DSCR {result.stabilized_dscr:4.2f}   "
-                      f"CoC {result.stabilized_cash_on_cash * 100:6.2f}%   "
-                      f"Cash flow {money(result.stabilized_monthly_cash_flow)}/mo")
+            if show["dscr"]:
+                stabilized.append(f"DSCR {result.stabilized_dscr:4.2f}")
+            if show["coc"]:
+                stabilized.append(f"CoC {result.stabilized_cash_on_cash * 100:6.2f}%")
+            if show["cf"]:
+                stabilized.append(
+                    f"Cash flow {money(result.stabilized_monthly_cash_flow)}/mo")
+        if stabilized:
+            chips += "\nStabilized (year 2):      " + "   ".join(stabilized)
+
+        after_tax = []
         if self.after_tax is not None:
-            chips += ("\nAfter tax:                "
-                      f"IRR {((self.after_tax.irr_screened or 0) * 100):5.2f}%   "
-                      f"Year-1 CF {money(self.after_tax.year1_after_tax_cash_flow / 12)}/mo")
-        self.metrics_label.configure(text=chips)
+            if show["atirr"]:
+                after_tax.append(f"IRR {((self.after_tax.irr_screened or 0) * 100):5.2f}%")
+            if show["cf"]:
+                after_tax.append(
+                    f"Year-1 CF {money(self.after_tax.year1_after_tax_cash_flow / 12)}/mo")
+        if after_tax:
+            chips += "\nAfter tax:                " + "   ".join(after_tax)
+        return chips
 
     def _projection_text(self, result: UnderwritingResult) -> str:
         rows = []
