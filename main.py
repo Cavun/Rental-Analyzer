@@ -13,9 +13,13 @@ Usage
     cat listing.html | python3 main.py -   # read from stdin
     python3 main.py --paste                # paste HTML/text, end with Ctrl-D
 
-Financing assumptions can be overridden per run (--rate, --down, --price, ...);
-everything else uses the standing house assumptions in financial_engine.py.
-No network calls anywhere in this pipeline.
+--rent and --tax are REQUIRED: this model does not invent a rent from the
+asking price, and it does not estimate a post-transfer tax bill. Pull rent
+from local comps and run the parcel through your state's tax estimator.
+
+Other financing assumptions can be overridden per run (--rate, --down,
+--price, ...); everything else uses the standing house assumptions in
+financial_engine.py. No network calls anywhere in this pipeline.
 """
 
 from __future__ import annotations
@@ -27,7 +31,12 @@ from typing import List, Optional, Tuple
 
 from enrichment import EnrichedListing, EnrichmentAssumptions, enrich, to_property_inputs
 from extraction import ListingData, parse_listing
-from financial_engine import PropertyInputs, UnderwritingResult, underwrite
+from financial_engine import (
+    PropertyInputs,
+    UnderwritingResult,
+    default_make_ready,
+    underwrite,
+)
 from report import (
     BATCH_HEADERS,
     Thresholds,
@@ -65,13 +74,22 @@ def analyze(blob: str,
         )
 
     assumptions = EnrichmentAssumptions()
-    if args and args.rent_pct is not None:
-        assumptions.rent_pct_of_price = args.rent_pct
+    rent = args.rent if args else None
+    tax = args.tax if args else None
+    if not rent:
+        raise SystemExit(
+            "--rent is required: give the monthly rent from local comps. "
+            "This model will not derive one from the asking price."
+        )
+    if not tax:
+        raise SystemExit(
+            "--tax is required: give the annual property tax a RENTAL buyer will "
+            "pay. Run the parcel through "
+            f"{assumptions.tax_estimator_url} -- the seller's bill on the listing "
+            "is capped and usually homestead-exempt, so it is not your bill."
+        )
 
-    enriched = enrich(listing, assumptions, property_tax_annual=(args.tax if args else None))
-    if args and args.rent:
-        enriched.monthly_rent = args.rent
-        enriched.notes.append(f"Rent overridden on the command line: ${args.rent:,.0f}/mo.")
+    enriched = enrich(listing, assumptions, property_tax_annual=tax, monthly_rent=rent)
 
     overrides = {}
     if args:
@@ -85,6 +103,12 @@ def analyze(blob: str,
             overrides["closing_cost_pct"] = args.closing
         if args.capex is not None:
             overrides["initial_capex"] = args.capex
+        else:
+            overrides["initial_capex"] = default_make_ready(listing.price)
+        if args.lease_up is not None:
+            overrides["lease_up_months"] = args.lease_up
+        if args.exit_cap is not None:
+            overrides["exit_cap_rate"] = args.exit_cap
         if args.vacancy is not None:
             overrides["vacancy_rate"] = args.vacancy
         if args.hold is not None:
@@ -120,8 +144,10 @@ def print_single(blob: str, args: argparse.Namespace) -> None:
                 "monthly_rent": inputs.monthly_rent,
                 "insurance_annual": enriched.insurance_annual,
                 "property_tax_annual": enriched.property_tax_annual,
-                "property_tax_source": enriched.property_tax_source,
                 "seller_property_tax_annual": enriched.seller_property_tax_annual,
+                "initial_capex": inputs.initial_capex,
+                "lease_up_months": inputs.lease_up_months,
+                "exit_cap_rate": result.exit_cap_rate_used,
                 "down_payment_pct": inputs.down_payment_pct,
                 "interest_rate": inputs.interest_rate,
                 "loan_term_years": inputs.loan_term_years,
@@ -133,8 +159,16 @@ def print_single(blob: str, args: argparse.Namespace) -> None:
                 "cap_rate": result.cap_rate,
                 "cash_on_cash": result.cash_on_cash,
                 "dscr": result.dscr,
-                "irr_with_equity": result.irr_with_equity,
-                "irr_cash_flow_only": result.irr_cash_flow_only,
+                "irr_appreciation_exit": result.irr_appreciation_exit,
+                "irr_cap_rate_exit": result.irr_cap_rate_exit,
+                "irr_screened": result.irr_screened,
+                "multiple_irr_possible": result.multiple_irr_possible,
+                "stabilized_dscr": result.stabilized_dscr,
+                "stabilized_cash_on_cash": result.stabilized_cash_on_cash,
+                "terminal_value_cap_rate": result.terminal_value_cap_rate,
+                "net_sale_appreciation": result.net_sale_appreciation,
+                "net_sale_cap_rate": result.net_sale_cap_rate,
+                "exit_values_disagree": result.exit_values_disagree,
                 "year1_noi": result.year1_noi,
                 "monthly_cash_flow": result.monthly_cash_flow,
                 "breakeven_occupancy": result.breakeven_occupancy,
@@ -145,7 +179,12 @@ def print_single(blob: str, args: argparse.Namespace) -> None:
         }, indent=2, default=str))
         return
 
-    print(format_report(result, enriched, thresholds, projection_years=args.show_years))
+    tax_layer = None
+    if args.after_tax:
+        from tax_engine import after_tax as compute_after_tax
+        tax_layer = compute_after_tax(result)
+    print(format_report(result, enriched, thresholds, projection_years=args.show_years,
+                        after_tax=tax_layer))
 
     if args.no_sensitivity:
         return
@@ -165,8 +204,8 @@ def print_single(blob: str, args: argparse.Namespace) -> None:
     print()
     be_rent = breakeven_rent(inputs)
     gap = (be_rent - inputs.monthly_rent) / inputs.monthly_rent if inputs.monthly_rent else 0.0
-    print(f"  Breakeven rent (year-1 cash flow = $0): {money(be_rent)}/mo "
-          f"vs assumed {money(inputs.monthly_rent)}/mo ({gap:+.1%}).")
+    print(f"  Breakeven rent (year-1 cash flow = $0, lease-up included): {money(be_rent)}/mo "
+          f"vs your {money(inputs.monthly_rent)}/mo ({gap:+.1%}).")
     print()
 
 
@@ -218,6 +257,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--gui", action="store_true", help="Launch the desktop GUI instead of the CLI.")
     p.add_argument("--json", action="store_true", help="Emit machine-readable JSON instead of a report.")
     p.add_argument("--no-sensitivity", action="store_true", help="Skip the sensitivity grids.")
+    p.add_argument("--after-tax", action="store_true",
+                   help="Also report the after-tax layer (depreciation, passive losses, "
+                        "recapture at sale). Reported, not screened.")
     p.add_argument("--show-years", type=int, default=10, help="Projection years to print (default 10).")
     p.add_argument("--grid-metric", default="IRR",
                    choices=["Cap Rate", "Cash-on-Cash", "DSCR", "IRR", "Monthly CF"],
@@ -225,17 +267,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     g = p.add_argument_group("deal overrides")
     g.add_argument("--price", type=float, help="Override the list price (e.g. your offer price).")
-    g.add_argument("--rent", type=float, help="Override monthly rent with a real comp.")
-    g.add_argument("--rent-pct", type=float, help="Rent as a share of price (default 0.01).")
+    g.add_argument("--rent", type=float,
+                   help="REQUIRED (except with --gui). Monthly rent in dollars, from "
+                        "local comps.")
     g.add_argument("--tax", type=float, metavar="ANNUAL",
-                   help="Verified annual property tax in dollars, e.g. from "
-                        "https://treas-secure.state.mi.us/ptestimator. Used verbatim; "
-                        "omit it and the tax is estimated from the listing.")
+                   help="REQUIRED. Annual property tax in dollars for a RENTAL buyer, "
+                        "e.g. from https://treas-secure.state.mi.us/ptestimator. Used "
+                        "verbatim -- the seller's bill on the listing is not your bill. "
+                        "REQUIRED except with --gui.")
     g.add_argument("--rate", type=float, help="Interest rate as a decimal (default 0.07).")
     g.add_argument("--down", type=float, help="Down payment share (default 0.20).")
     g.add_argument("--term", type=int, help="Loan term in years (default 30).")
     g.add_argument("--closing", type=float, help="Closing costs as a share of price (default 0.03).")
-    g.add_argument("--capex", type=float, help="Initial capex dollars (default 0, turn-key).")
+    g.add_argument("--capex", type=float,
+                   help="Make-ready / rehab dollars. Default is $2,500 or 1% of price, "
+                        "whichever is higher -- pass 0 for a genuinely turn-key unit.")
+    g.add_argument("--lease-up", type=float, metavar="MONTHS",
+                   help="Months of vacancy in YEAR 1 only, on top of the steady-state "
+                        "vacancy rate (default 1).")
+    g.add_argument("--exit-cap", type=float,
+                   help="Exit cap rate as a decimal for the cap-rate terminal value "
+                        "(default: year-1 cap rate + 0.50%%).")
     g.add_argument("--vacancy", type=float, help="Vacancy rate (default 0.0833 = 1 month).")
     g.add_argument("--hold", type=int, help="Projection years (default 30).")
 
@@ -274,10 +326,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print_single(read_blob(args.sources[0]), args)
         return 0
 
-    if args.tax is not None:
-        print("Warning: --tax applies the same figure to every listing in a batch. "
-              "Tax is per-parcel; run listings one at a time to give each its own.",
-              file=sys.stderr)
+    print("Warning: --rent and --tax apply the same figures to every listing in a "
+          "batch. Both are per-property; run listings one at a time to give each "
+          "its own.", file=sys.stderr)
     print_batch([(src, read_blob(src)) for src in args.sources], args)
     return 0
 

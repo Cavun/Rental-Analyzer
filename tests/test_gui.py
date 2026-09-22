@@ -2,6 +2,10 @@
 GUI tests. The number-parsing and formatting helpers are tested everywhere;
 the widget tests only run where tkinter and a display are both available, so
 this suite stays green on a headless box.
+
+The load-bearing tests here are the refusals: the GUI must not underwrite
+without a rent or a tax figure, and it must not let one listing's rent or tax
+follow you onto the next one.
 """
 
 import os
@@ -38,9 +42,8 @@ class TestNumberParsing(unittest.TestCase):
         self.assertEqual(self.parse(None, 7.0), 7.0)
 
 
-@unittest.skipUnless(HAS_TK and HAS_DISPLAY, "needs tkinter and a display")
-class TestGUIPipeline(unittest.TestCase):
-    """Drives the real widgets: load a listing, underwrite, compare, export."""
+class GUITestCase(unittest.TestCase):
+    """Shared fixture: a real widget tree with the sample listing available."""
 
     def setUp(self):
         import tkinter as tk
@@ -52,39 +55,59 @@ class TestGUIPipeline(unittest.TestCase):
     def tearDown(self):
         self.root.destroy()
 
-    def test_sample_loads_and_underwrites(self):
+    def load_and_fill(self, rent="2400", tax="5245"):
+        """Load the sample, then supply the two required figures by hand."""
+        self.app.load_sample()
+        self.app.f_rent.var.set(rent)
+        self.app.f_tax.var.set(tax)
+        self.app.underwrite()
+        self.root.update()
+
+
+@unittest.skipUnless(HAS_TK and HAS_DISPLAY, "needs tkinter and a display")
+class TestGUIPipeline(GUITestCase):
+    """Drives the real widgets: load a listing, underwrite, compare, export."""
+
+    def test_sample_loads_but_does_not_underwrite_on_its_own(self):
         self.app.load_sample()
         self.root.update()
         self.assertEqual(self.app.f_price.get(), 239900.0)
-        self.assertEqual(self.app.f_rent.get(), 2399.0)      # 1% rule auto-fill
-        self.assertIsNotNone(self.app.result)
-        self.assertIn("PASS ON IT", self.app.verdict_label.cget("text"))
+        # Nothing auto-fills rent or tax, so nothing is underwritten yet.
+        self.assertEqual(self.app.f_rent.get_text(), "")
+        self.assertEqual(self.app.f_tax.get_text(), "")
+        self.assertIsNone(self.app.result)
 
-    def test_typed_tax_flips_source_to_verified(self):
-        self.app.load_sample()
-        self.assertFalse(self.app._tax_is_provided())
-        self.app.f_tax.var.set("6800")
-        self.app.underwrite()
-        self.assertTrue(self.app._tax_is_provided())
-        self.assertEqual(self.app.result.inputs.expenses.property_tax_annual, 6800.0)
-        self.assertIn("VERIFIED", self.app.tax_source_label.cget("text"))
+    def test_underwrites_once_rent_and_tax_are_supplied(self):
+        self.load_and_fill()
+        self.assertIsNotNone(self.app.result)
+        self.assertEqual(self.app.result.inputs.monthly_rent, 2400.0)
+        self.assertEqual(self.app.result.inputs.expenses.property_tax_annual, 5245.0)
 
     def test_edited_field_drives_the_model(self):
-        self.app.load_sample()
+        self.load_and_fill()
         self.app.f_price.var.set("180000")
         self.app.f_rate.var.set("6.0")
         self.app.underwrite()
         self.assertEqual(self.app.result.inputs.purchase_price, 180000.0)
         self.assertAlmostEqual(self.app.result.inputs.interest_rate, 0.06)
 
+    def test_editing_price_does_not_move_rent_or_tax(self):
+        """The whole point of requiring them: they are not price derivatives."""
+        self.load_and_fill()
+        self.app.f_price.var.set("400000")
+        self.app.underwrite()
+        self.assertEqual(self.app.f_rent.get(), 2400.0)
+        self.assertEqual(self.app.f_tax.get(), 5245.0)
+        self.assertEqual(self.app.result.inputs.monthly_rent, 2400.0)
+
     def test_hand_typed_address_not_duplicated(self):
-        self.app.load_sample()
+        self.load_and_fill()
         self.app.f_address.var.set("12 Elm St")
         self.app.underwrite()
         self.assertEqual(self.app.listing.full_address, "12 Elm St")
 
     def test_comparison_accumulates(self):
-        self.app.load_sample()
+        self.load_and_fill()
         self.app.add_to_comparison()
         self.app.f_price.var.set("165000")
         self.app.underwrite()
@@ -101,23 +124,145 @@ class TestGUIPipeline(unittest.TestCase):
         self.assertIn("purchase price", self.app.status.get().lower())
 
 
-if __name__ == "__main__":
-    unittest.main()
+@unittest.skipUnless(HAS_TK and HAS_DISPLAY, "needs tkinter and a display")
+class TestRequiredInputs(GUITestCase):
+    """The GUI must refuse, visibly, rather than substitute a figure."""
+
+    def test_refuses_to_underwrite_with_an_empty_rent_box(self):
+        self.app.load_sample()
+        self.app.f_tax.var.set("5245")
+        self.app.f_rent.var.set("")
+        self.app.underwrite()
+        self.assertIsNone(self.app.result)
+        self.assertIn("rent", self.app.status.get().lower())
+
+    def test_refuses_a_zero_or_negative_rent(self):
+        self.app.load_sample()
+        self.app.f_tax.var.set("5245")
+        for bad in ("0", "-100"):
+            self.app.f_rent.var.set(bad)
+            self.app.underwrite()
+            self.assertIsNone(self.app.result, bad)
+            self.assertIn("rent", self.app.status.get().lower())
+
+    def test_refuses_to_underwrite_with_an_empty_tax_box(self):
+        self.app.load_sample()
+        self.app.f_rent.var.set("2400")
+        self.app.f_tax.var.set("")
+        self.app.underwrite()
+        self.assertIsNone(self.app.result)
+        self.assertIn("tax", self.app.status.get().lower())
+
+    def test_refuses_a_zero_or_negative_tax(self):
+        self.app.load_sample()
+        self.app.f_rent.var.set("2400")
+        for bad in ("0", "-1"):
+            self.app.f_tax.var.set(bad)
+            self.app.underwrite()
+            self.assertIsNone(self.app.result, bad)
+            self.assertIn("tax", self.app.status.get().lower())
+
+    def test_loading_a_second_listing_clears_rent_and_tax(self):
+        """
+        A stale rent or tax carried over from the last property underwrites a
+        deal that does not exist, and looks exactly like one that does.
+        """
+        self.load_and_fill(rent="2400", tax="5245")
+        self.assertIsNotNone(self.app.result)
+
+        self.app.load_sample()          # "next listing"
+        self.root.update()
+        self.assertEqual(self.app.f_rent.get_text(), "")
+        self.assertEqual(self.app.f_tax.get_text(), "")
+
+        # And it will not underwrite again until both are refilled.
+        self.app.result = None
+        self.app.underwrite()
+        self.assertIsNone(self.app.result)
+
+    def test_the_one_percent_button_and_estimator_button_are_gone(self):
+        for attribute in ("apply_one_percent", "reestimate_tax",
+                          "_tax_is_provided", "_refresh_tax_source_label"):
+            self.assertFalse(hasattr(self.app, attribute), attribute)
+        for field in ("f_seller_tax", "f_taxable", "f_sev", "f_homestead"):
+            self.assertFalse(hasattr(self.app, field), field)
+
+    def test_insurance_still_auto_fills_on_load(self):
+        """It used to live inside reestimate_tax(); it must have moved, not died."""
+        self.app.load_sample()
+        self.root.update()
+        self.assertGreater(self.app.f_insurance.get(0.0), 0.0)
 
 
 @unittest.skipUnless(HAS_TK and HAS_DISPLAY, "needs tkinter and a display")
-class TestThresholdsAreAllExposed(unittest.TestCase):
-    """Every threshold screen() enforces must have a box driving it."""
-
-    def setUp(self):
-        import tkinter as tk
-        from gui import RentalAnalyzerGUI
-        self.root = tk.Tk()
-        self.app = RentalAnalyzerGUI(self.root)
+class TestPessimismDefaults(GUITestCase):
+    def test_make_ready_defaults_to_the_higher_rule_on_load(self):
+        from financial_engine import default_make_ready
+        self.app.load_sample()
         self.root.update()
+        self.assertEqual(self.app.f_capex0.get(), default_make_ready(239900))
 
-    def tearDown(self):
-        self.root.destroy()
+    def test_lease_up_defaults_to_one_month(self):
+        self.load_and_fill()
+        self.assertEqual(self.app.result.inputs.lease_up_months, 1.0)
+
+    def test_lease_up_box_drives_the_model(self):
+        self.load_and_fill()
+        base = self.app.result.year1_cash_flow
+        self.app.f_lease_up.var.set("3")
+        self.app.underwrite()
+        self.assertEqual(self.app.result.inputs.lease_up_months, 3.0)
+        self.assertLess(self.app.result.year1_cash_flow, base)
+
+    def test_banner_labels_year_one_and_shows_stabilized(self):
+        self.load_and_fill()
+        text = self.app.metrics_label.cget("text")
+        self.assertIn("Year 1 (incl. lease-up)", text)
+        self.assertIn("Stabilized (year 2)", text)
+
+    def test_exit_cap_box_drives_the_model(self):
+        self.load_and_fill()
+        default = self.app.result.exit_cap_rate_used
+        self.app.f_exit_cap.var.set("8.0")
+        self.app.underwrite()
+        self.assertAlmostEqual(self.app.result.exit_cap_rate_used, 0.08)
+        self.assertNotAlmostEqual(default, 0.08)
+
+
+@unittest.skipUnless(HAS_TK and HAS_DISPLAY, "needs tkinter and a display")
+class TestAfterTaxTab(GUITestCase):
+    def test_after_tax_layer_is_computed_and_rendered(self):
+        self.load_and_fill()
+        self.assertIsNotNone(self.app.after_tax)
+        text = self.app.txt_after_tax.get("1.0", "end")
+        self.assertIn("AFTER TAX", text)
+        self.assertIn("AFTER-TAX CASH FLOW", text)
+
+    def test_tax_boxes_drive_the_layer(self):
+        self.load_and_fill()
+        self.assertAlmostEqual(self.app.after_tax.assumptions.ordinary_rate, 0.2625)
+        self.app.f_city_rate.var.set("1.5")
+        self.app.underwrite()
+        self.assertAlmostEqual(self.app.after_tax.assumptions.ordinary_rate, 0.2775)
+
+    def test_after_tax_is_not_screened_unless_the_box_is_filled(self):
+        self.load_and_fill()
+        self.assertIsNone(self.app.thresholds_from_fields().min_after_tax_irr)
+        self.app.f_min_at_irr.var.set("6")
+        self.assertAlmostEqual(self.app.thresholds_from_fields().min_after_tax_irr, 0.06)
+
+    def test_passive_loss_toggle_changes_the_layer(self):
+        self.load_and_fill()
+        usable = self.app.after_tax.years[0].tax
+        self.app.v_passive_usable.set(False)
+        self.app.underwrite()
+        self.assertEqual(self.app.after_tax.years[0].tax, 0.0)
+        self.assertLess(usable, 0.0)
+
+
+@unittest.skipUnless(HAS_TK and HAS_DISPLAY, "needs tkinter and a display")
+class TestThresholdsAreAllExposed(GUITestCase):
+    """Every threshold screen() enforces must have a box driving it."""
 
     def test_every_threshold_field_is_driven_by_the_form(self):
         """A threshold with no box behind it would be enforced invisibly."""
@@ -131,17 +276,21 @@ class TestThresholdsAreAllExposed(unittest.TestCase):
 
     def test_cash_flow_box_changes_the_screen(self):
         from report import screen
-        self.app.load_sample()
+        self.load_and_fill()
         checks = screen(self.app.result, self.app.thresholds_from_fields())
         self.assertEqual(checks["Monthly Cash Flow"], "FLAG")
-        # A landlord willing to feed the deal $300/mo.
+        # A landlord willing to feed the deal $300/mo through year 1.
         self.app.f_min_cf.var.set("-300")
         checks = screen(self.app.result, self.app.thresholds_from_fields())
         self.assertEqual(checks["Monthly Cash Flow"], "PASS")
 
     def test_breakeven_occupancy_is_reported_not_screened(self):
         from report import screen
-        self.app.load_sample()
+        self.load_and_fill()
         self.assertNotIn("Breakeven Occupancy", screen(self.app.result,
                                                        self.app.thresholds_from_fields()))
         self.assertIn("Breakeven occ", self.app.metrics_label.cget("text"))
+
+
+if __name__ == "__main__":
+    unittest.main()

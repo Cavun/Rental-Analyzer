@@ -8,12 +8,12 @@ underwrite or a later grid.
 Three grids ship by default:
   1. rent growth x vacancy rate   -- how fragile is the operating assumption?
   2. interest rate                -- what does the rate you actually lock cost?
-  3. rent level (% of price)      -- the 1% rule is a screen, not a comp; this
-                                     shows where the deal breaks if real rents
-                                     come in below it. (Added on top of the
-                                     two requested grids because rent is the
-                                     single most load-bearing assumption in
-                                     the whole model.)
+  3. rent level                   -- your entered rent, stepped DOWN, because
+                                     rent is the single most load-bearing
+                                     assumption in the model and the risk is
+                                     that your comp was optimistic. Centred on
+                                     what you actually entered, not on a
+                                     percentage of the asking price.
 """
 
 from __future__ import annotations
@@ -28,14 +28,19 @@ from financial_engine import PropertyInputs, UnderwritingResult, underwrite
 RENT_GROWTH_VALUES = (0.00, 0.01, 0.02, 0.03, 0.04)
 VACANCY_VALUES = (1 / 12, 2 / 12, 3 / 12)          # 1, 2, 3 vacant months a year
 INTEREST_RATE_VALUES = (0.055, 0.0625, 0.07, 0.075, 0.08, 0.085)
-RENT_PCT_VALUES = (0.006, 0.007, 0.008, 0.009, 0.010)
+# Multipliers applied to the ENTERED rent. The 0% row is the base case, so it
+# must reproduce the headline result exactly.
+RENT_LEVEL_DELTAS = (-0.20, -0.15, -0.10, -0.05, 0.00, 0.05)
 
 # Metric name -> extractor. Used to build one grid per metric.
 METRICS = {
     "Cap Rate": lambda r: r.cap_rate,
     "Cash-on-Cash": lambda r: r.cash_on_cash,
     "DSCR": lambda r: r.dscr,
-    "IRR": lambda r: r.irr_with_equity,
+    # The screened IRR is the LOWER of the two exit methods (see
+    # financial_engine.underwrite) -- sensitivity must move with the number
+    # the deal is actually judged on.
+    "IRR": lambda r: r.irr_screened,
     "Monthly CF": lambda r: r.monthly_cash_flow,
 }
 
@@ -103,27 +108,44 @@ def interest_rate_grid(base: PropertyInputs,
 
 def rent_level_grid(base: PropertyInputs,
                     metrics: Sequence[str] = ("Cap Rate", "Cash-on-Cash", "DSCR", "IRR", "Monthly CF"),
-                    rent_pct_values: Sequence[float] = RENT_PCT_VALUES) -> SensitivityGrid:
-    """One row per rent level expressed as a percentage of purchase price."""
+                    deltas: Sequence[float] = RENT_LEVEL_DELTAS) -> SensitivityGrid:
+    """
+    One row per rent level, centred on the rent you entered.
+
+    Rows are percentage moves off YOUR rent, labelled in dollars with the
+    resulting rent/price ratio beside each. Anchoring the grid to a share of
+    the purchase price (as this used to) puts every row below a real comp
+    whenever the comp beats 1% of price, which makes the whole grid useless
+    exactly when the deal is good.
+    """
     grid = SensitivityGrid(
-        title="Rent level sensitivity (rent as % of price)",
-        row_label="Rent %",
+        title="Rent level sensitivity (moves off your entered rent)",
+        row_label="Rent",
         col_label="Metric",
-        row_values=list(rent_pct_values),
+        row_values=[base.monthly_rent * (1 + d) for d in deltas],
         col_values=list(range(len(metrics))),
         metric="mixed",
     )
+    grid.row_headers = [  # type: ignore[attr-defined]
+        f"{f'{d:+.0%}':>4}  ${rent:,.0f}/mo  ({rent / base.purchase_price:.2%})"
+        for d, rent in zip(deltas, grid.row_values)
+    ]
     grid.col_headers = list(metrics)  # type: ignore[attr-defined]
-    for pct in grid.row_values:
-        result = _run(base, monthly_rent=base.purchase_price * pct)
+    for rent in grid.row_values:
+        result = _run(base, monthly_rent=rent)
         grid.cells.append([METRICS[m](result) for m in metrics])
     return grid
 
 
 def breakeven_rent(base: PropertyInputs, tolerance: float = 1.0) -> float:
     """
-    Lowest monthly rent at which year-1 cash flow is still >= $0.
+    Lowest monthly rent at which YEAR-1 cash flow is still >= $0 -- year 1
+    includes the lease-up months, so this breakeven inherits them
+    automatically and is stricter than a stabilized breakeven would be.
+
     Bisection on rent; independent of the base inputs (deep-copied per run).
+    The 5%-of-price upper bracket stays safe: no residential rent comes in
+    at 60% of purchase price a year.
     """
     low, high = 0.0, base.purchase_price * 0.05
     if underwrite(copy.deepcopy(base)).year1_cash_flow >= 0 and base.monthly_rent:

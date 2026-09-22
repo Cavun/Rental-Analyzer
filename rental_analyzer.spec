@@ -52,7 +52,7 @@ for package in ("bs4", "soupsieve"):
 # The app's own modules. They are already reachable from gui.py, but naming
 # them makes the build independent of how the import graph is walked.
 hiddenimports += [
-    'extraction', 'enrichment', 'financial_engine',
+    'extraction', 'enrichment', 'financial_engine', 'tax_engine',
     'report', 'sensitivity', 'sample_listing',
 ]
 
