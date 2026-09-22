@@ -28,7 +28,39 @@ import re
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, Optional
 
-from bs4 import BeautifulSoup
+# BeautifulSoup is imported lazily so a missing/mis-bundled parser degrades
+# into a clear message at the point of use, rather than killing the whole
+# program at import time. Plain-text parsing keeps working without it.
+try:
+    from bs4 import BeautifulSoup
+    BS4_AVAILABLE = True
+except ImportError:  # pragma: no cover - exercised by the packaging tests
+    BeautifulSoup = None  # type: ignore[assignment]
+    BS4_AVAILABLE = False
+
+
+class ParserUnavailableError(RuntimeError):
+    """Raised when HTML parsing is requested but beautifulsoup4 is missing."""
+
+
+MISSING_BS4_MESSAGE = (
+    "HTML parsing needs beautifulsoup4, which is not available in this build.\n\n"
+    "Running from source:\n"
+    "    python -m pip install -r requirements.txt\n\n"
+    "Running a packaged app: it was built by a Python that did not have "
+    "beautifulsoup4 installed. Install it into that same interpreter and "
+    "rebuild:\n"
+    "    python -m pip install -r requirements.txt\n"
+    "    python -m PyInstaller rental_analyzer.spec\n\n"
+    "In the meantime you can still paste plain listing TEXT instead of HTML, "
+    "or type the numbers in by hand."
+)
+
+
+def _soup(html: str) -> "BeautifulSoup":
+    if not BS4_AVAILABLE:
+        raise ParserUnavailableError(MISSING_BS4_MESSAGE)
+    return BeautifulSoup(html, "html.parser")
 
 
 @dataclass
@@ -271,7 +303,7 @@ def parse_flexmls_html(html: str) -> ListingData:
     A different IDX vendor's HTML will need its own parser -- the class names
     and JSON shape here won't transfer.
     """
-    soup = BeautifulSoup(html, "html.parser")
+    soup = _soup(html)
     data = ListingData(raw_text="")
 
     # 1. Embedded JSON payload -- the reliable core fields.
@@ -378,10 +410,12 @@ def parse_listing(blob: str) -> ListingData:
     the caller still gets something usable.
     """
     if looks_like_html(blob):
+        if not BS4_AVAILABLE:
+            raise ParserUnavailableError(MISSING_BS4_MESSAGE)
         data = parse_flexmls_html(blob)
         if data.price:
             return data
-        text = BeautifulSoup(blob, "html.parser").get_text("\n", strip=True)
+        text = _soup(blob).get_text("\n", strip=True)
         fallback = parse_pasted_text(text)
         # Keep whatever the structured parse *did* find.
         for key, value in data.to_dict().items():

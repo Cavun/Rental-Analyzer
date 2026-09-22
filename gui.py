@@ -30,7 +30,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from enrichment import EnrichmentAssumptions, enrich
-from extraction import ListingData, parse_listing
+from extraction import BS4_AVAILABLE, ListingData, ParserUnavailableError, parse_listing
 from financial_engine import OperatingExpenses, PropertyInputs, UnderwritingResult, underwrite
 from report import (
     BATCH_HEADERS,
@@ -174,6 +174,11 @@ class RentalAnalyzerGUI(ttk.Frame):
         self._build_inputs(left)
         self._build_output(right)
         self._build_statusbar()
+
+        if not BS4_AVAILABLE:
+            self.status.set("HTML parsing unavailable (beautifulsoup4 missing from this "
+                            "build) -- plain text and manual entry still work.")
+            self.after(400, self._warn_missing_parser)
 
         master.bind("<Return>", lambda _e: self.underwrite())
         master.bind("<Control-o>", lambda _e: self.open_file())
@@ -378,6 +383,10 @@ class RentalAnalyzerGUI(ttk.Frame):
                 start = end
         widget.configure(state="disabled")
 
+    def _warn_missing_parser(self) -> None:
+        from extraction import MISSING_BS4_MESSAGE
+        messagebox.showwarning("HTML parser missing from this build", MISSING_BS4_MESSAGE)
+
     # --- Loading listings -----------------------------------------------
 
     def open_file(self) -> None:
@@ -417,6 +426,11 @@ class RentalAnalyzerGUI(ttk.Frame):
     def load_blob(self, blob: str, source: str = "") -> None:
         try:
             listing = parse_listing(blob)
+        except ParserUnavailableError as exc:
+            messagebox.showerror("HTML parser missing from this build", str(exc))
+            self.status.set("HTML parsing unavailable -- paste plain listing text, "
+                            "or type the numbers in by hand.")
+            return
         except Exception as exc:
             messagebox.showerror("Could not parse that page", str(exc))
             return

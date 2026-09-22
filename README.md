@@ -36,13 +36,22 @@ with a python.org build. On Debian/Ubuntu: `sudo apt install python3-tk`.
 ### Building a double-clickable app
 
 ```bash
-pip install pyinstaller
-pyinstaller rental_analyzer.spec
+python -m pip install -r requirements.txt   # bs4 must be in THIS interpreter
+python -m pip install pyinstaller
+python -m PyInstaller rental_analyzer.spec
 ```
 
 `dist/` then holds `RentalAnalyzer.exe` (Windows), `RentalAnalyzer.app`
 (macOS) or a standalone binary (Linux) — no Python needed on the machine
 that runs it.
+
+**The one gotcha:** PyInstaller bundles only what the interpreter running it
+can import. If `beautifulsoup4` is installed in a different Python than the
+one invoking PyInstaller, the app builds fine and then dies on launch with
+`No module named 'bs4'`. Run the `pip install -r requirements.txt` line above
+with the *same* `python` you build with, and the spec's preflight check will
+stop the build with instructions rather than shipping a broken app. If the
+build log says `Hidden import 'soupsieve' not found`, that is the symptom.
 
 ## Using it from the command line
 
@@ -160,9 +169,9 @@ two misses, DSCR intact) · **PASS ON IT**.
 | `report.py` | Text report with PASS/FLAG markers and a fixed-width table renderer. |
 | `gui.py` | Tkinter desktop app over the same pipeline — editable fields, live report, comparison table, CSV/JSON export. |
 | `main.py` | CLI wiring: extract → enrich → finance → report → sensitivity. `--gui` launches the desktop app. |
-| `rental_analyzer.spec` | PyInstaller recipe for a standalone double-clickable build. |
+| `rental_analyzer.spec` | PyInstaller recipe for a standalone double-clickable build. Preflights the parser, bundles bs4 via `collect_all`, and uses onedir on macOS / onefile elsewhere. |
 | `sample_listing.py` | A realistic fabricated flexmls page so `python3 main.py` runs with no setup. |
-| `tests/` | `python3 -m unittest discover tests` — 44 tests over loan math, IRR, the tax input and correction, grid isolation, and the GUI (widget tests skip automatically on a headless box). |
+| `tests/` | `python3 -m unittest discover tests` — 47 tests over loan math, IRR, the tax input and correction, grid isolation, and the GUI (widget tests skip automatically on a headless box). |
 
 ## Extending it
 

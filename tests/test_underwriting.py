@@ -271,3 +271,43 @@ class TestReport(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPackagingFallbacks(unittest.TestCase):
+    """
+    A packaged app built by a Python without beautifulsoup4 used to die at
+    import with a raw traceback. It must now degrade to a clear message and
+    keep the text path working.
+    """
+
+    def test_text_parsing_works_without_bs4(self):
+        import extraction
+        original = extraction.BS4_AVAILABLE
+        extraction.BS4_AVAILABLE = False
+        try:
+            parsed = extraction.parse_listing("42 Oak Ave\n$150,000\n3 bd 1 ba\nTaxes $1,800/yr")
+            self.assertEqual(parsed.price, 150000.0)
+        finally:
+            extraction.BS4_AVAILABLE = original
+
+    def test_html_parsing_raises_actionable_error_without_bs4(self):
+        import extraction
+        original = extraction.BS4_AVAILABLE
+        extraction.BS4_AVAILABLE = False
+        try:
+            with self.assertRaises(extraction.ParserUnavailableError) as ctx:
+                extraction.parse_listing(SAMPLE_LISTING_HTML)
+            message = str(ctx.exception)
+            self.assertIn("beautifulsoup4", message)
+            self.assertIn("pip install", message)
+        finally:
+            extraction.BS4_AVAILABLE = original
+
+    def test_spec_preflights_the_parser(self):
+        """The spec must refuse to build without bs4 rather than ship a broken app."""
+        spec = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "rental_analyzer.spec")
+        with open(spec, encoding="utf-8") as fh:
+            content = fh.read()
+        self.assertIn("BUILD STOPPED", content)
+        self.assertIn("collect_all", content)
