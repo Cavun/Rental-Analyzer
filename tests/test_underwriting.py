@@ -35,11 +35,13 @@ from financial_engine import (  # noqa: E402
 )
 from report import (OFF, PASS_LATER, Thresholds,  # noqa: E402
                     cash_flow_asterisk_note, cash_flow_clears_later, format_report,
-                    one_line_summary, render_table, screen, verdict)
+                    one_line_summary, passing_purchase_price, render_table, screen,
+                    verdict)
 from sample_listing import SAMPLE_LISTING_HTML  # noqa: E402
 from sensitivity import (  # noqa: E402
     RENT_LEVEL_DELTAS,
     breakeven_rent,
+    highest_passing_price,
     interest_rate_grid,
     rent_growth_vs_vacancy,
     rent_level_grid,
@@ -921,3 +923,160 @@ class TestCLIStillImports(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPassingPurchasePrice(unittest.TestCase):
+    """
+    The "would pass at purchase price" answer on a failing verdict.
+
+    The number is only worth printing if it is exactly right, so these tests
+    check the boundary from both sides rather than just the shape of the
+    string: the solved price must clear the bars, and a little more must not.
+    """
+
+    def failing_deal(self, **overrides) -> PropertyInputs:
+        """Overpriced for its rent: misses both default thresholds."""
+        return make_inputs(purchase_price=400000, monthly_rent=1800, **overrides)
+
+    def test_solved_price_clears_every_enabled_threshold(self):
+        t = Thresholds(screen_dscr=True, screen_cap_rate=True)
+        result = underwrite(self.failing_deal())
+        solved = passing_purchase_price(result, t)
+        self.assertIsNotNone(solved)
+        at_price = underwrite(result.inputs.copy_with(purchase_price=solved.price))
+        self.assertTrue(all(v != "FAIL" for v in screen(at_price, t).values()),
+                        screen(at_price, t))
+
+    def test_it_is_the_HIGHEST_passing_price_not_merely_a_passing_one(self):
+        """A price you could offer and still clear the bars is not the answer
+        if a higher one also clears them -- that would understate the offer."""
+        t = Thresholds()
+        result = underwrite(self.failing_deal())
+        solved = passing_purchase_price(result, t)
+        above = underwrite(result.inputs.copy_with(purchase_price=solved.price + 5000))
+        self.assertIn("FAIL", screen(above, t).values())
+
+    def test_nothing_is_solved_for_a_deal_that_already_passes(self):
+        result = underwrite(make_inputs(purchase_price=120000, monthly_rent=2200))
+        self.assertEqual(screen(result, Thresholds()),
+                         {"Cash-on-Cash": "PASS", "Monthly Cash Flow": "PASS"})
+        self.assertIsNone(passing_purchase_price(result, Thresholds()))
+
+    def test_nothing_is_solved_when_no_threshold_is_switched_on(self):
+        """Nothing was screened, so there is no bar to solve a price against."""
+        off = Thresholds(screen_cash_on_cash=False, screen_monthly_cash_flow=False)
+        self.assertIsNone(passing_purchase_price(underwrite(self.failing_deal()), off))
+
+    def test_a_bar_price_cannot_reach_reports_no_price_instead_of_a_wrong_one(self):
+        """At a low enough price there is no debt service left to cut, so a
+        cash-flow bar above NOI is unreachable. That must read as unreachable,
+        not as some price that never actually cleared it."""
+        deal = make_inputs(purchase_price=300000, monthly_rent=900,
+                           expenses=OperatingExpenses(property_tax_annual=6000,
+                                                      insurance_annual=2500))
+        solved = passing_purchase_price(underwrite(deal),
+                                        Thresholds(min_monthly_cash_flow=400.0))
+        self.assertIsNotNone(solved)
+        self.assertIsNone(solved.price)
+        self.assertIn("Monthly Cash Flow", solved.blocking)
+
+    def test_the_discount_is_reported_against_the_price_underwritten(self):
+        result = underwrite(self.failing_deal())
+        solved = passing_purchase_price(result, Thresholds())
+        self.assertEqual(solved.asking, 400000)
+        self.assertAlmostEqual(solved.discount, 400000 - solved.price)
+        self.assertAlmostEqual(solved.discount_pct, solved.discount / 400000)
+
+    def test_the_price_rides_on_the_verdict_line_when_something_missed(self):
+        result = underwrite(self.failing_deal())
+        checks = screen(result, Thresholds())
+        solved = passing_purchase_price(result, Thresholds())
+        line = verdict(checks, solved)
+        self.assertTrue(line.startswith("FAIL"), line)
+        self.assertIn("Would pass at purchase price:", line)
+        self.assertIn(f"${solved.price:,.0f}", line)
+
+    def test_a_passing_verdict_carries_no_price_clause(self):
+        """Nothing to negotiate: the deal already clears the bars."""
+        self.assertNotIn("Would pass at", verdict({"Cash-on-Cash": "PASS"}, None))
+
+    def test_marginal_verdicts_get_the_price_too(self):
+        """A miss is a miss: one bar short raises the same question."""
+        result = underwrite(self.failing_deal())
+        solved = passing_purchase_price(result, Thresholds())
+        line = verdict({"Cap Rate": "PASS", "Cash-on-Cash": "FAIL"}, solved)
+        self.assertTrue(line.startswith("MARGINAL"), line)
+        self.assertIn("Would pass at purchase price:", line)
+
+    def test_after_tax_bar_is_excluded_and_flagged_without_a_layer_factory(self):
+        """Re-testing after-tax IRR at another price needs the tax layer rebuilt
+        for that price. Reusing the entered price's layer would solve the wrong
+        problem, so the bar is dropped from the solve and the result says so."""
+        t = Thresholds(min_after_tax_irr=0.09)
+        solved = passing_purchase_price(underwrite(self.failing_deal()), t)
+        self.assertTrue(solved.after_tax_unsolved)
+        self.assertIn("After-tax IRR is not included",
+                      verdict({"Cash-on-Cash": "FAIL"}, solved))
+
+    def test_after_tax_bar_is_solved_when_the_factory_is_supplied(self):
+        from tax_engine import after_tax as compute_after_tax
+        t = Thresholds(min_after_tax_irr=0.09)
+        result = underwrite(self.failing_deal())
+        solved = passing_purchase_price(result, t, compute_after_tax)
+        self.assertFalse(solved.after_tax_unsolved)
+        self.assertIsNotNone(solved.price)
+        at_price = underwrite(result.inputs.copy_with(purchase_price=solved.price))
+        checks = screen(at_price, t, compute_after_tax(at_price))
+        self.assertIn("After-tax IRR", checks)
+        self.assertTrue(all(v != "FAIL" for v in checks.values()), checks)
+
+    def test_a_year_one_only_miss_is_not_a_price_problem(self):
+        """PASS* counts as passing here exactly as it does in verdict(), so the
+        solver never asks you to underpay for a lease-up dip."""
+        deal = make_inputs(purchase_price=200000, monthly_rent=2000,
+                           lease_up_months=3)
+        t = Thresholds(screen_cash_on_cash=False, screen_monthly_cash_flow=True)
+        result = underwrite(deal)
+        if screen(result, t).get("Monthly Cash Flow") != PASS_LATER:
+            self.skipTest("this deal does not produce a year-1-only miss")
+        self.assertIsNone(passing_purchase_price(result, t))
+
+    def test_the_base_inputs_are_never_mutated_by_the_solve(self):
+        deal = self.failing_deal()
+        before = (deal.purchase_price, deal.monthly_rent, deal.initial_capex,
+                  deal.expenses.property_tax_annual)
+        passing_purchase_price(underwrite(deal), Thresholds(screen_dscr=True))
+        self.assertEqual(before, (deal.purchase_price, deal.monthly_rent,
+                                  deal.initial_capex,
+                                  deal.expenses.property_tax_annual))
+
+    def test_only_the_price_moves_rent_and_tax_are_held(self):
+        """The question is what THIS deal would have to cost, so the solver may
+        not quietly improve the rent or the tax bill to get there."""
+        deal = self.failing_deal()
+        seen = []
+
+        def passes(result):
+            seen.append((result.inputs.monthly_rent,
+                         result.inputs.expenses.property_tax_annual,
+                         result.inputs.initial_capex))
+            return result.inputs.purchase_price <= 150000
+
+        highest_passing_price(deal, passes)
+        self.assertTrue(seen)
+        held = (deal.monthly_rent, deal.expenses.property_tax_annual,
+                deal.initial_capex)
+        self.assertTrue(all(row == held for row in seen), set(seen))
+
+    def test_the_returned_price_is_re_checked_not_inferred_from_the_bracket(self):
+        """Every price handed back has itself been underwritten and tested, so a
+        metric that is not monotonic in price -- or the rounding to a round
+        number -- can never produce a price that does not actually pass."""
+        window = lambda result: 100000 <= result.inputs.purchase_price <= 150000
+        deal = self.failing_deal()
+        price = highest_passing_price(deal, window)
+        self.assertIsNotNone(price)
+        self.assertTrue(window(underwrite(deal.copy_with(purchase_price=price))),
+                        price)
+        # And it found the top of the window, not just somewhere inside it.
+        self.assertLessEqual(abs(price - 150000), 1000, price)

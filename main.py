@@ -202,11 +202,15 @@ def print_single(blob: str, args: argparse.Namespace) -> None:
         return
 
     tax_layer = None
+    tax_layer_fn = None
     if args.after_tax:
         from tax_engine import after_tax as compute_after_tax
         tax_layer = compute_after_tax(result)
+        # Same default assumptions, but as a factory: the "would pass at"
+        # price solver has to rebuild the layer for each candidate price.
+        tax_layer_fn = compute_after_tax
     print(format_report(result, enriched, thresholds, projection_years=args.show_years,
-                        after_tax=tax_layer))
+                        after_tax=tax_layer, after_tax_fn=tax_layer_fn))
 
     if args.no_sensitivity:
         return

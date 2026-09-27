@@ -159,3 +159,62 @@ def breakeven_rent(base: PropertyInputs, tolerance: float = 1.0) -> float:
         if high - low < tolerance:
             break
     return high
+
+
+# Probe ladder for highest_passing_price, as shares of the asking price. The
+# solver walks DOWN it looking for a price that clears the bars, so it only
+# reports "no price works" after even 1% of asking has failed.
+PRICE_PROBES = (0.9, 0.75, 0.5, 0.25, 0.1, 0.01)
+
+
+def highest_passing_price(base: PropertyInputs,
+                          passes: Callable[[UnderwritingResult], bool],
+                          tolerance: float = 250.0) -> Optional[float]:
+    """
+    Highest purchase price at which `passes` is satisfied, or None if no price
+    down to 1% of the asking price satisfies it.
+
+    Price alone moves. Down payment, loan amount and closing costs are
+    percentages of it, so they follow automatically; everything else -- rent,
+    property tax, insurance, make-ready, the rate -- is held at what the
+    caller entered, because the question being answered is "what would I have
+    to pay for THIS deal", not "what else could be different".
+
+    `passes` is a predicate on the underwritten result rather than a threshold
+    set, so this module stays independent of the screening rules in report.py.
+
+    Bisection, bracketed by a probe ladder so a non-monotonic metric cannot
+    produce a bracket that was never valid. The returned price is re-checked
+    before it is handed back: a price that does not itself pass is never
+    returned, whatever the search did on the way there.
+    """
+    if base.purchase_price <= 0:
+        return None
+    # high is a price known to FAIL, low a price known to PASS. Starting high
+    # at the asking price assumes the deal fails as entered -- callers only
+    # ask this question when it does -- and the probe below re-establishes it.
+    high = base.purchase_price
+    low: Optional[float] = None
+    for share in PRICE_PROBES:
+        candidate = base.purchase_price * share
+        if passes(_run(base, purchase_price=candidate)):
+            low = candidate
+            break
+        high = candidate
+    if low is None:
+        return None
+    for _ in range(80):
+        if high - low < tolerance:
+            break
+        mid = (low + high) / 2
+        if passes(_run(base, purchase_price=mid)):
+            low = mid
+        else:
+            high = mid
+    # Report a round number, but only if it still clears: rounding DOWN is
+    # safe under a monotonic metric and this re-check covers the case where
+    # one is not.
+    rounded = float(int(low / 1000) * 1000)
+    if rounded > 0 and passes(_run(base, purchase_price=rounded)):
+        return rounded
+    return low
