@@ -332,8 +332,22 @@ class RentalAnalyzerGUI(ttk.Frame):
                     "homestead-exempt bill. Run the parcel through the state estimator "
                     "(button below) and type the figure here. Used verbatim. Cleared "
                     "on every new listing so the last property's tax cannot follow you.")
+        # Display only: the district is what the listing says, not something to
+        # underwrite with, and typing over it would only desync it from the parse.
+        self.v_school_district = tk.StringVar(value="n/a")
+        district_label = ttk.Label(tax, text="School district")
+        district_label.grid(row=1, column=0, sticky="w", padx=(6, 4), pady=2)
+        district_value = ttk.Label(tax, textvariable=self.v_school_district,
+                                   foreground="#444")
+        district_value.grid(row=1, column=1, columnspan=5, sticky="w", pady=2)
+        district_tip = ("From the listing, shown for reference. Millage varies by "
+                        "district, so it is a sanity check on the estimator figure "
+                        "above -- nothing computes with it.")
+        Tooltip(district_label, district_tip)
+        Tooltip(district_value, district_tip)
+
         button_row = ttk.Frame(tax)
-        button_row.grid(row=1, column=0, columnspan=6, sticky="w", pady=(4, 2))
+        button_row.grid(row=2, column=0, columnspan=6, sticky="w", pady=(4, 2))
         ttk.Button(button_row, text="Open MI tax estimator",
                    command=lambda: webbrowser.open(TAX_ESTIMATOR_URL)).pack(side="left", padx=4)
         ttk.Label(button_row, text="Seller's bill on the listing is reference only.",
@@ -653,6 +667,7 @@ class RentalAnalyzerGUI(ttk.Frame):
         # not exist, and it looks exactly like a real one.
         self.f_rent.var.set("")
         self.f_tax.var.set("")
+        self.v_school_district.set(listing.school_district or "n/a")
 
         if listing.price:
             # Insurance is still estimated, and this is now the only place it
