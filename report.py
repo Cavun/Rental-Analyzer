@@ -5,16 +5,20 @@ Turns an UnderwritingResult into something you can read in a terminal in ten
 seconds and decide: look closer, or walk away.
 
 Nothing here computes a deal metric -- it only formats what
-financial_engine.py already produced.
+financial_engine.py already produced. The one exception is
+passing_purchase_price(), which re-underwrites the deal at other prices to
+answer "what would this have to cost?"; it owns that because it is the
+screening rules below that decide what passing means.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence
+from dataclasses import dataclass, replace
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from enrichment import EnrichedListing
-from financial_engine import UnderwritingResult
+from financial_engine import UnderwritingResult, underwrite
+from sensitivity import PRICE_PROBES, highest_passing_price, price_scaled_inputs
 
 PASS = "PASS"
 FAIL = "FAIL"
@@ -312,7 +316,114 @@ def screen(result: UnderwritingResult,
     return checks
 
 
-def verdict(checks: Dict[str, str]) -> str:
+@dataclass
+class PassingPrice:
+    """
+    What the deal would have to cost to clear every enabled threshold.
+
+    price is None when no price does. Monthly cash flow is the usual one: at a
+    low enough price there is no debt service left, and tax and insurance have
+    scaled away with the price, so what is left is rent against management,
+    maintenance, capex and vacancy. If that alone is under the bar, no offer
+    reaches it and the answer is a rent or expense problem, not a price one.
+    """
+
+    price: Optional[float]
+    asking: float
+    blocking: List[str]              # bars still missed at any price
+    after_tax_unsolved: bool = False   # screened on after-tax IRR, un-resolvable
+
+    @property
+    def discount(self) -> Optional[float]:
+        return None if self.price is None else self.asking - self.price
+
+    @property
+    def discount_pct(self) -> Optional[float]:
+        if self.price is None or not self.asking:
+            return None
+        return self.discount / self.asking
+
+
+def passing_purchase_price(
+        result: UnderwritingResult,
+        thresholds: Optional[Thresholds] = None,
+        after_tax_fn: Optional[Callable[[UnderwritingResult], Any]] = None,
+) -> Optional[PassingPrice]:
+    """
+    Solve for the highest purchase price at which every ENABLED threshold
+    passes. Returns None when there is nothing to solve: no thresholds are
+    switched on, or the deal already clears them at the asking price.
+
+    The price moves, and with it everything that depends on it -- property tax
+    and insurance are discounted by the same share; see
+    sensitivity.price_scaled_inputs. A PASS* (a miss that year 1 owns alone)
+    counts as passing here exactly as it does in verdict(), so this never asks
+    you to underpay for a lease-up problem.
+
+    after_tax_fn rebuilds the after-tax layer for a candidate price. It is
+    required to screen on after-tax IRR, because that bar cannot be re-tested
+    against a different price without recomputing the tax layer -- reusing the
+    asking price's after-tax IRR would silently solve the wrong problem. When
+    it is missing, the bar is left out of the solve and the result says so
+    rather than reporting a price that was never checked against it.
+    """
+    t = thresholds or Thresholds()
+    base = result.inputs
+    unsolved = t.min_after_tax_irr is not None and after_tax_fn is None
+    if unsolved:
+        # Drop the bar we cannot re-test, and flag it, rather than solving
+        # against a stale after-tax IRR.
+        t = replace(t, min_after_tax_irr=None)
+
+    def checks_at(candidate: UnderwritingResult) -> Dict[str, str]:
+        layer = after_tax_fn(candidate) if after_tax_fn is not None else None
+        return screen(candidate, t, layer)
+
+    def missed(candidate: UnderwritingResult) -> List[str]:
+        return [k for k, v in checks_at(candidate).items() if v == FAIL]
+
+    entered = checks_at(result)
+    if not entered:
+        return None                       # nothing switched on: nothing to solve
+    if not any(v == FAIL for v in entered.values()):
+        return None                       # already passes at the asking price
+
+    price = highest_passing_price(base, lambda candidate: not missed(candidate))
+    if price is None:
+        # Name the bars that a lower price cannot fix, read at the bottom of
+        # the probe ladder, so the line can say what is actually wrong.
+        floor = price_scaled_inputs(base, base.purchase_price * PRICE_PROBES[-1])
+        return PassingPrice(None, base.purchase_price, missed(underwrite(floor)),
+                            after_tax_unsolved=unsolved)
+    return PassingPrice(price, base.purchase_price, [], after_tax_unsolved=unsolved)
+
+
+def _would_pass_at(passing: Optional[PassingPrice]) -> str:
+    """The price clause appended to a verdict that missed something."""
+    if passing is None:
+        return ""
+    if passing.price is None:
+        blocking = ", ".join(passing.blocking)
+        verb = "misses" if len(passing.blocking) == 1 else "miss"
+        return (" No lower purchase price clears it"
+                + (f": {blocking} {verb} at any price -- that is a rent or "
+                   "expense problem, not a price one." if blocking else "."))
+    clause = (f" Would pass at purchase price: {money(passing.price)}"
+              f" ({money(-passing.discount)}, {pct(-passing.discount_pct, 1)}"
+              " off the price underwritten).")
+    if passing.after_tax_unsolved:
+        clause += " After-tax IRR is not included in that solve."
+    return clause
+
+
+def verdict(checks: Dict[str, str],
+            passing: Optional[PassingPrice] = None) -> str:
+    """
+    One line. `passing` is the solved purchase price from
+    passing_purchase_price(); when a threshold was missed it rides along on the
+    end, because "how much less would I have to pay" is the next question every
+    miss raises.
+    """
     if not checks:
         return ("NOT SCREENED -- every threshold is switched off; "
                 "the metrics below are reported, not judged.")
@@ -330,16 +441,17 @@ def verdict(checks: Dict[str, str]) -> str:
     # call an 0-for-2 deal marginal.
     if len(missed) < len(checks) and len(missed) <= 2 and "DSCR" not in missed:
         return (f"MARGINAL -- {len(missed)} threshold(s) missed: "
-                f"{', '.join(missed)}." + starred)
+                f"{', '.join(missed)}." + starred + _would_pass_at(passing))
     return (f"FAIL -- {len(missed)} threshold(s) missed: {', '.join(missed)}."
-            + starred)
+            + starred + _would_pass_at(passing))
 
 
 def format_report(result: UnderwritingResult,
                   enriched: Optional[EnrichedListing] = None,
                   thresholds: Optional[Thresholds] = None,
                   projection_years: int = 10,
-                  after_tax=None) -> str:
+                  after_tax=None,
+                  after_tax_fn: Optional[Callable[[UnderwritingResult], Any]] = None) -> str:
     t = thresholds or Thresholds()
     inputs = result.inputs
     out: List[str] = []
@@ -452,7 +564,13 @@ def format_report(result: UnderwritingResult,
     out.append(render_table(["Line item", "Year 1", "Note"], rows))
 
     # --- Screening ------------------------------------------------------
-    checks = screen(result, t, after_tax)
+    # The layer the after-tax bar is SCREENED against. after_tax_fn lets a
+    # caller supply the rates for the price solve below without also asking
+    # for the full after-tax section at the end of the report -- the GUI shows
+    # that in its own tab and would otherwise print it twice.
+    screening_layer = after_tax if after_tax is not None else (
+        after_tax_fn(result) if after_tax_fn is not None else None)
+    checks = screen(result, t, screening_layer)
     out.append(_header("SCREENING -- YEAR 1 (incl. lease-up)"))
     # Every metric is listed whether or not it is screened: a switched-off
     # test still tells you something, it just does not fail the deal. "off"
@@ -472,7 +590,7 @@ def format_report(result: UnderwritingResult,
         rows.append(["Breakeven occupancy", pct(result.breakeven_occupancy, 1),
                      f"<= {pct(t.max_breakeven_occupancy, 0)}", checks["Breakeven Occupancy"]])
     if "After-tax IRR" in checks:
-        rows.append([f"After-tax IRR ({result.horizon}yr)", pct(after_tax.irr_screened),
+        rows.append([f"After-tax IRR ({result.horizon}yr)", pct(screening_layer.irr_screened),
                      f">= {pct(t.min_after_tax_irr, 0)}", checks["After-tax IRR"]])
     out.append(render_table(["Metric", "Value", "Threshold", "Result"], rows))
     out.extend(cash_flow_asterisk_note(result, t))
@@ -519,7 +637,17 @@ def format_report(result: UnderwritingResult,
         f"lease-up = {underwritten:.1f} month(s) of the 12)."
     ))
     out.append("")
-    out.append(_wrap("VERDICT: " + verdict(checks)))
+    passing = passing_purchase_price(result, t, after_tax_fn)
+    out.append(_wrap("VERDICT: " + verdict(checks, passing)))
+    if passing is not None and passing.price is not None:
+        out.append(_wrap(
+            "Everything that depends on the price moves with it: down payment, "
+            "loan and closing costs are percentages of it, and property tax and "
+            "insurance are discounted by the same share, since the assessment "
+            "follows the sale price and the policy follows the value. Rent, "
+            "make-ready, HOA and the rate stay at the figures you entered. It is "
+            "what this deal would have to cost to clear your bars, not a "
+            "prediction that the seller will take it."))
 
     # --- Projection -----------------------------------------------------
     horizon = min(projection_years, result.horizon)

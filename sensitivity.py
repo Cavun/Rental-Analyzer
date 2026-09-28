@@ -19,7 +19,7 @@ Three grids ship by default:
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, List, Optional, Sequence
 
 from financial_engine import PropertyInputs, UnderwritingResult, underwrite
@@ -159,3 +159,91 @@ def breakeven_rent(base: PropertyInputs, tolerance: float = 1.0) -> float:
         if high - low < tolerance:
             break
     return high
+
+
+def price_scaled_inputs(base: PropertyInputs, price: float) -> PropertyInputs:
+    """
+    `base` re-priced at `price`, with the figures that depend on the price
+    moved by the same share.
+
+    Down payment, loan amount and closing costs are percentages of the price,
+    so the engine already derives them from it. Property tax and insurance are
+    not percentages, but they do follow the price: a Michigan assessment is
+    tied to what the property last sold for, and a dwelling policy is written
+    against replacement cost, so a buyer paying 10% less is not handed the bill
+    of a buyer who paid full price. Both are scaled by the same share as the
+    price -- the discount the caller is testing, applied straight across.
+
+    Rent, make-ready, HOA dues and the rate are NOT scaled. The rent comes from
+    comps on the property, not from what you paid for it; make-ready is the
+    work the building needs; HOA dues are set by the association; the rate is
+    the market's. Discounting any of those would answer a different question.
+
+    Never mutates `base` -- PropertyInputs.copy_with copies the expenses too.
+    """
+    share = price / base.purchase_price if base.purchase_price else 1.0
+    return base.copy_with(
+        purchase_price=price,
+        expenses=replace(
+            base.expenses,
+            property_tax_annual=base.expenses.property_tax_annual * share,
+            insurance_annual=base.expenses.insurance_annual * share,
+        ),
+    )
+
+
+# Probe ladder for highest_passing_price, as shares of the asking price. The
+# solver walks DOWN it looking for a price that clears the bars, so it only
+# reports "no price works" after even 1% of asking has failed.
+PRICE_PROBES = (0.9, 0.75, 0.5, 0.25, 0.1, 0.01)
+
+
+def highest_passing_price(base: PropertyInputs,
+                          passes: Callable[[UnderwritingResult], bool],
+                          tolerance: float = 250.0) -> Optional[float]:
+    """
+    Highest purchase price at which `passes` is satisfied, or None if no price
+    down to 1% of the asking price satisfies it.
+
+    What moves with the price -- see price_scaled_inputs. What does not: rent,
+    make-ready, HOA and the rate, because the question being answered is "what
+    would I have to pay for THIS deal", not "what else could be different".
+
+    `passes` is a predicate on the underwritten result rather than a threshold
+    set, so this module stays independent of the screening rules in report.py.
+
+    Bisection, bracketed by a probe ladder so a non-monotonic metric cannot
+    produce a bracket that was never valid. The returned price is re-checked
+    before it is handed back: a price that does not itself pass is never
+    returned, whatever the search did on the way there.
+    """
+    if base.purchase_price <= 0:
+        return None
+    # high is a price known to FAIL, low a price known to PASS. Starting high
+    # at the asking price assumes the deal fails as entered -- callers only
+    # ask this question when it does -- and the probe below re-establishes it.
+    high = base.purchase_price
+    low: Optional[float] = None
+    for share in PRICE_PROBES:
+        candidate = base.purchase_price * share
+        if passes(underwrite(price_scaled_inputs(base, candidate))):
+            low = candidate
+            break
+        high = candidate
+    if low is None:
+        return None
+    for _ in range(80):
+        if high - low < tolerance:
+            break
+        mid = (low + high) / 2
+        if passes(underwrite(price_scaled_inputs(base, mid))):
+            low = mid
+        else:
+            high = mid
+    # Report a round number, but only if it still clears: rounding DOWN is
+    # safe under a monotonic metric and this re-check covers the case where
+    # one is not.
+    rounded = float(int(low / 1000) * 1000)
+    if rounded > 0 and passes(underwrite(price_scaled_inputs(base, rounded))):
+        return rounded
+    return low

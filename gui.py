@@ -55,6 +55,7 @@ from report import (
     format_report,
     money,
     one_line_summary,
+    passing_purchase_price,
     render_grid,
     render_table,
     screen,
@@ -332,8 +333,22 @@ class RentalAnalyzerGUI(ttk.Frame):
                     "homestead-exempt bill. Run the parcel through the state estimator "
                     "(button below) and type the figure here. Used verbatim. Cleared "
                     "on every new listing so the last property's tax cannot follow you.")
+        # Display only: the district is what the listing says, not something to
+        # underwrite with, and typing over it would only desync it from the parse.
+        self.v_school_district = tk.StringVar(value="n/a")
+        district_label = ttk.Label(tax, text="School district")
+        district_label.grid(row=1, column=0, sticky="w", padx=(6, 4), pady=2)
+        district_value = ttk.Label(tax, textvariable=self.v_school_district,
+                                   foreground="#444")
+        district_value.grid(row=1, column=1, columnspan=5, sticky="w", pady=2)
+        district_tip = ("From the listing, shown for reference. Millage varies by "
+                        "district, so it is a sanity check on the estimator figure "
+                        "above -- nothing computes with it.")
+        Tooltip(district_label, district_tip)
+        Tooltip(district_value, district_tip)
+
         button_row = ttk.Frame(tax)
-        button_row.grid(row=1, column=0, columnspan=6, sticky="w", pady=(4, 2))
+        button_row.grid(row=2, column=0, columnspan=6, sticky="w", pady=(4, 2))
         ttk.Button(button_row, text="Open MI tax estimator",
                    command=lambda: webbrowser.open(TAX_ESTIMATOR_URL)).pack(side="left", padx=4)
         ttk.Label(button_row, text="Seller's bill on the listing is reference only.",
@@ -653,6 +668,7 @@ class RentalAnalyzerGUI(ttk.Frame):
         # not exist, and it looks exactly like a real one.
         self.f_rent.var.set("")
         self.f_tax.var.set("")
+        self.v_school_district.set(listing.school_district or "n/a")
 
         if listing.price:
             # Insurance is still estimated, and this is now the only place it
@@ -821,8 +837,13 @@ class RentalAnalyzerGUI(ttk.Frame):
         self.after_tax = after_tax
         thresholds = self.thresholds_from_fields()
 
+        # A factory, not the layer itself: the "would pass at" solve has to
+        # rebuild the after-tax numbers per candidate price, and passing the
+        # layer instead would also append the whole after-tax section to the
+        # report, which already has its own tab.
         self._set_text(self.txt_report,
-                       format_report(result, enriched, thresholds, projection_years=0))
+                       format_report(result, enriched, thresholds, projection_years=0,
+                                     after_tax_fn=self._after_tax_fn()))
         self._set_text(self.txt_projection, self._projection_text(result))
         self._set_text(self.txt_sensitivity, self._sensitivity_text(inputs))
         self._set_text(self.txt_after_tax, format_after_tax(after_tax, result))
@@ -833,9 +854,19 @@ class RentalAnalyzerGUI(ttk.Frame):
             "(both your figures)"
         )
 
+    def _after_tax_fn(self):
+        """Rebuild the after-tax layer for an arbitrary result, at the rates on
+        the form. The price solver needs this: an after-tax IRR read off the
+        entered price would answer the wrong question at a candidate one."""
+        assumptions = self.tax_assumptions_from_fields()
+        return lambda candidate: compute_after_tax(candidate, assumptions)
+
     def _update_banner(self, result: UnderwritingResult, thresholds: Thresholds) -> None:
         checks = screen(result, thresholds, self.after_tax)
-        text = verdict(checks)
+        # What the deal would have to cost to clear the bars it missed. Nothing
+        # is appended when it already clears them.
+        text = verdict(checks, passing_purchase_price(result, thresholds,
+                                                      self._after_tax_fn()))
         # The asterisk belongs on the headline: a deal whose only miss is
         # year 1 needs cash in the bank, not a different price.
         later = (cash_flow_clears_later(result, thresholds)
