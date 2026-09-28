@@ -397,9 +397,33 @@ def format_report(result: UnderwritingResult,
     ]
     out.append(render_table(["Item", "Amount"], rows, align_right=True))
 
+    # --- Monthly payment (all in) ---------------------------------------
+    # What actually leaves the account every month: principal and interest
+    # plus the fixed carrying costs. Variable expenses (management,
+    # maintenance, capex reserve) are a percentage of collected rent, not a
+    # bill, so they stay out of this table and live in Year 1 operations.
+    exp = inputs.expenses
+    monthly_tax = exp.property_tax_annual / 12
+    monthly_ins = exp.insurance_annual / 12
+    monthly_hoa = exp.hoa_annual / 12
+    monthly_other = exp.other_fixed_annual / 12
+    all_in = result.monthly_payment + exp.fixed_annual / 12
+    out.append("")
+    out.append("  Monthly payment -- all in")
+    rows = [
+        ["Mortgage (principal + interest)", money(result.monthly_payment, 2),
+         money(result.annual_debt_service) + "/yr"],
+        ["Property tax", money(monthly_tax, 2), money(exp.property_tax_annual) + "/yr"],
+        ["Insurance", money(monthly_ins, 2), money(exp.insurance_annual) + "/yr"],
+        ["HOA", money(monthly_hoa, 2), money(exp.hoa_annual) + "/yr"],
+        ["Other fixed (utilities, lawn/snow)", money(monthly_other, 2),
+         money(exp.other_fixed_annual) + "/yr"],
+        ["TOTAL MONTHLY PAYMENT", money(all_in, 2), money(all_in * 12) + "/yr"],
+    ]
+    out.append(render_table(["Item", "Monthly", "Annual"], rows, align_right=True))
+
     # --- Year 1 operations ----------------------------------------------
     y1 = result.years[0]
-    exp = inputs.expenses
     out.append(_header("YEAR 1 OPERATIONS (includes lease-up)"))
     vacancy_note = f"{inputs.vacancy_rate * 12:.1f} mo steady-state"
     if inputs.lease_up_months:
