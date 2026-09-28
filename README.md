@@ -171,6 +171,12 @@ for reference, and nothing computes with it. A non-blocking warning fires if
 your tax figure falls outside ~0.5–4% of price, which catches a monthly
 figure typed into an annual box or a stray zero.
 
+The one place your tax figure is not used as typed is the "would pass at"
+solve below, which discounts it along with the price — at a lower sale price
+the assessment, and so the bill, is lower. That is a hypothetical price, not
+your underwrite: the deal you entered is still screened on the figure you
+entered.
+
 **2. Year 1 is not the stabilized year, and pretending otherwise flatters
 every deal.** You do not close on a property and collect rent the next
 morning. Year 1 carries **lease-up months** (default 1) on top of the
@@ -319,6 +325,33 @@ worse, or any DSCR miss) · **NOT SCREENED** (every switch off). A PASS that
 rests on the cash-flow asterisk says so on the verdict line. PASS means the
 listing cleared the screen; a listing that misses thresholds reads FAIL, never
 "pass".
+
+### Would pass at
+
+A verdict that missed something answers the question it raises, on the same
+line: `FAIL -- 2 threshold(s) missed: Cash-on-Cash, Monthly Cash Flow. Would
+pass at purchase price: $138,000 (-$101,900, -42.5% off the price
+underwritten).`
+
+It is solved by re-underwriting the deal at other prices, and everything that
+depends on the price moves with it: down payment, loan and closing costs are
+percentages of it, and **property tax and insurance take the same discount**,
+because the assessment follows the sale price and the policy follows the value.
+Rent, make-ready, HOA and the rate stay at the figures you entered — none of
+them is a function of what you paid, so discounting them would answer a
+different question.
+
+Some bars are not a price problem at all. Price takes debt service, tax and
+insurance down with it, but not vacancy or the percentage expenses, so a
+cash-flow bar above what the rent can cover after those is out of reach at any
+price. That reads as `No lower purchase price clears it: Monthly Cash Flow
+misses at any price` rather than as a number.
+
+Two guarantees, because a wrong offer price is expensive: the figure handed
+back has itself been re-underwritten and re-screened, so a price that does not
+actually pass is never printed; and it is the *highest* passing price, so it
+does not understate what you could offer. A `PASS*` counts as passing, so the
+solve never asks you to underpay for a lease-up dip.
 
 ## Layout
 

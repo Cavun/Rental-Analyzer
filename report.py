@@ -18,7 +18,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from enrichment import EnrichedListing
 from financial_engine import UnderwritingResult, underwrite
-from sensitivity import PRICE_PROBES, highest_passing_price
+from sensitivity import PRICE_PROBES, highest_passing_price, price_scaled_inputs
 
 PASS = "PASS"
 FAIL = "FAIL"
@@ -321,9 +321,10 @@ class PassingPrice:
     """
     What the deal would have to cost to clear every enabled threshold.
 
-    price is None when no price does -- some bars do not move with price at
-    all. Monthly cash flow is the usual one: at a low enough price there is no
-    debt service left to cut, so if NOI alone is under the bar, no offer
+    price is None when no price does. Monthly cash flow is the usual one: at a
+    low enough price there is no debt service left, and tax and insurance have
+    scaled away with the price, so what is left is rent against management,
+    maintenance, capex and vacancy. If that alone is under the bar, no offer
     reaches it and the answer is a rent or expense problem, not a price one.
     """
 
@@ -353,9 +354,11 @@ def passing_purchase_price(
     passes. Returns None when there is nothing to solve: no thresholds are
     switched on, or the deal already clears them at the asking price.
 
-    Only the price moves -- see sensitivity.highest_passing_price. A PASS* (a
-    miss that year 1 owns alone) counts as passing here exactly as it does in
-    verdict(), so this never asks you to underpay for a lease-up problem.
+    The price moves, and with it everything that depends on it -- property tax
+    and insurance are discounted by the same share; see
+    sensitivity.price_scaled_inputs. A PASS* (a miss that year 1 owns alone)
+    counts as passing here exactly as it does in verdict(), so this never asks
+    you to underpay for a lease-up problem.
 
     after_tax_fn rebuilds the after-tax layer for a candidate price. It is
     required to screen on after-tax IRR, because that bar cannot be re-tested
@@ -389,7 +392,7 @@ def passing_purchase_price(
     if price is None:
         # Name the bars that a lower price cannot fix, read at the bottom of
         # the probe ladder, so the line can say what is actually wrong.
-        floor = base.copy_with(purchase_price=base.purchase_price * PRICE_PROBES[-1])
+        floor = price_scaled_inputs(base, base.purchase_price * PRICE_PROBES[-1])
         return PassingPrice(None, base.purchase_price, missed(underwrite(floor)),
                             after_tax_unsolved=unsolved)
     return PassingPrice(price, base.purchase_price, [], after_tax_unsolved=unsolved)
@@ -614,11 +617,13 @@ def format_report(result: UnderwritingResult,
     out.append(_wrap("VERDICT: " + verdict(checks, passing)))
     if passing is not None and passing.price is not None:
         out.append(_wrap(
-            "That price is solved on the price alone: down payment, loan and "
-            "closing costs follow it because they are percentages of it, while "
-            "rent, property tax, insurance, make-ready and the rate stay at the "
-            "figures you entered. It is what this deal would have to cost to "
-            "clear your bars, not a prediction that the seller will take it."))
+            "Everything that depends on the price moves with it: down payment, "
+            "loan and closing costs are percentages of it, and property tax and "
+            "insurance are discounted by the same share, since the assessment "
+            "follows the sale price and the policy follows the value. Rent, "
+            "make-ready, HOA and the rate stay at the figures you entered. It is "
+            "what this deal would have to cost to clear your bars, not a "
+            "prediction that the seller will take it."))
 
     # --- Projection -----------------------------------------------------
     horizon = min(projection_years, result.horizon)
