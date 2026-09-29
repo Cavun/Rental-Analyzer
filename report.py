@@ -563,6 +563,38 @@ def format_report(result: UnderwritingResult,
     ]
     out.append(render_table(["Line item", "Year 1", "Note"], rows))
 
+    # --- Year 2 operations ----------------------------------------------
+    # The first stabilized year: no lease-up, no year-1 repair bump, one year
+    # of rent and expense growth applied. Printed next to year 1 so the
+    # timing penalty is visible as a number rather than a footnote.
+    if len(result.years) > 1:
+        y2 = result.years[1]
+        expense_factor = 1 + inputs.expense_growth
+        y2_monthly_rent = inputs.monthly_rent * (1 + inputs.rent_growth)
+        out.append(_header("YEAR 2 OPERATIONS (stabilized, no lease-up)"))
+        rows = [
+            ["Gross scheduled rent", money(y2.gross_rent),
+             money(y2_monthly_rent) + "/mo at " + pct(inputs.rent_growth, 1) + " growth"],
+            [f"Vacancy ({pct(inputs.vacancy_rate, 1)})",
+             "-" + money(y2.vacancy_loss), f"{inputs.vacancy_rate * 12:.1f} mo steady-state"],
+            ["Effective gross income", money(y2.effective_gross_income), ""],
+            ["Property tax", "-" + money(exp.property_tax_annual * expense_factor),
+             pct(inputs.expense_growth, 1) + " growth"],
+            ["Insurance", "-" + money(exp.insurance_annual * expense_factor), ""],
+            ["HOA", "-" + money(exp.hoa_annual * expense_factor), ""],
+            [f"Management ({pct(exp.management_pct, 0)})",
+             "-" + money(y2.effective_gross_income * exp.management_pct), ""],
+            [f"Maintenance ({pct(exp.maintenance_pct, 0)})",
+             "-" + money(y2.effective_gross_income * exp.maintenance_pct), ""],
+            [f"Capex reserve ({pct(exp.capex_reserve_pct, 0)})",
+             "-" + money(y2.effective_gross_income * exp.capex_reserve_pct), ""],
+            ["NET OPERATING INCOME", money(y2.noi),
+             ("+" if y2.noi >= y1.noi else "") + money(y2.noi - y1.noi) + " vs year 1"],
+            ["Debt service", "-" + money(y2.debt_service), ""],
+            ["CASH FLOW", money(y2.cash_flow), money(y2.cash_flow / 12) + "/mo"],
+        ]
+        out.append(render_table(["Line item", "Year 2", "Note"], rows))
+
     # --- Screening ------------------------------------------------------
     # The layer the after-tax bar is SCREENED against. after_tax_fn lets a
     # caller supply the rates for the price solve below without also asking
