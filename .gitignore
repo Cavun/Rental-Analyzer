@@ -6,3 +6,7 @@ venv/
 build/
 dist/
 *.manifest
+
+# Saved comparison table (client data, written by the GUI)
+saved_comparison.json
+saved_comparison.json.*
