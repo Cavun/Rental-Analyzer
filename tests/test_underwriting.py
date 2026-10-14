@@ -446,6 +446,18 @@ class TestYearOnePessimism(unittest.TestCase):
         self.assertIn("YEAR 1 (incl. lease-up)", text)
         self.assertIn("Stabilized (year 2", text)
 
+    def test_operations_tables_show_other_fixed(self):
+        """Other fixed costs are in NOI, so both operations tables must list them."""
+        inputs = make_inputs(expenses=OperatingExpenses(
+            property_tax_annual=3000, insurance_annual=1200, other_fixed_annual=1800))
+        text = format_report(underwrite(inputs), None, Thresholds())
+        y1 = text.split("YEAR 1 OPERATIONS")[1].split("YEAR 2 OPERATIONS")[0]
+        y2 = text.split("YEAR 2 OPERATIONS")[1]
+        self.assertIn("Other fixed", y1)
+        self.assertIn("-$1,800", y1)
+        self.assertIn("Other fixed", y2)
+        self.assertIn("-$1,822", y2)  # 1,800 * 1.0125 expense growth
+
     def test_breakeven_text_accounts_for_lease_up(self):
         text = format_report(underwrite(make_inputs(lease_up_months=1)), None, Thresholds())
         self.assertIn("lease-up", text)
