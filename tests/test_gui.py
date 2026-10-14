@@ -10,7 +10,9 @@ follow you onto the next one.
 
 import os
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -46,14 +48,29 @@ class GUITestCase(unittest.TestCase):
     """Shared fixture: a real widget tree with the sample listing available."""
 
     def setUp(self):
+        # Every test gets its own empty saved-comparison folder, so neither
+        # the user's real saved deals nor another test's leak in.
+        self._data_dir = tempfile.TemporaryDirectory()
+        self._env = mock.patch.dict(os.environ,
+                                    {"RENTAL_ANALYZER_DATA_DIR": self._data_dir.name})
+        self._env.start()
+        self.root = None
+        self.new_app()
+
+    def new_app(self):
+        """(Re)open the window, as a fresh launch of the program would."""
         import tkinter as tk
         from gui import RentalAnalyzerGUI
+        if self.root is not None:
+            self.root.destroy()
         self.root = tk.Tk()
         self.app = RentalAnalyzerGUI(self.root)
         self.root.update()
 
     def tearDown(self):
         self.root.destroy()
+        self._env.stop()
+        self._data_dir.cleanup()
 
     def load_and_fill(self, rent="2400", tax="5245"):
         """Load the sample, then supply the two required figures by hand."""
@@ -114,14 +131,89 @@ class TestGUIPipeline(GUITestCase):
         self.app.add_to_comparison()
         self.assertEqual(len(self.app.comparison), 2)
         self.assertEqual(len(self.app.tree.get_children()), 2)
-        self.app.clear_comparison()
+        with mock.patch("gui.messagebox.askyesno", return_value=True):
+            self.app.clear_comparison()
         self.assertEqual(len(self.app.comparison), 0)
+
+    def test_clear_comparison_can_be_cancelled(self):
+        self.load_and_fill()
+        self.app.add_to_comparison()
+        with mock.patch("gui.messagebox.askyesno", return_value=False):
+            self.app.clear_comparison()
+        self.assertEqual(len(self.app.comparison), 1)
 
     def test_underwrite_without_price_is_not_fatal(self):
         self.app.reset_fields()
         self.app.underwrite()
         self.assertIsNone(self.app.result)
         self.assertIn("purchase price", self.app.status.get().lower())
+
+
+@unittest.skipUnless(HAS_TK and HAS_DISPLAY, "needs tkinter and a display")
+class TestSavedComparison(GUITestCase):
+    """The comparison table survives a restart, and each row reopens its inputs."""
+
+    def add_two_deals(self):
+        self.load_and_fill()
+        self.app.f_other.var.set("1,800")
+        self.app.f_min_irr.set_on(True)
+        self.app.v_niit.set(True)
+        self.app.underwrite()
+        self.app.add_to_comparison()
+        self.app.f_price.var.set("165000")
+        self.app.f_rent.var.set("1900")
+        self.app.underwrite()
+        self.app.add_to_comparison()
+
+    def test_rows_reload_on_next_launch(self):
+        self.add_two_deals()
+        rows = [list(self.app.tree.item(i, "values")) for i in self.app.tree.get_children()]
+        self.new_app()
+        self.assertEqual(len(self.app.comparison), 2)
+        reloaded = [list(self.app.tree.item(i, "values"))
+                    for i in self.app.tree.get_children()]
+        self.assertEqual(reloaded, rows)
+
+    def test_open_row_restores_every_input(self):
+        self.add_two_deals()
+        self.new_app()
+        self.assertIsNone(self.app.result)
+        first = self.app.tree.get_children()[0]
+        self.app.tree.selection_set(first)
+        self.app.open_selected()
+        self.assertIsNotNone(self.app.result)
+        self.assertEqual(self.app.f_price.get(), 239900.0)
+        self.assertEqual(self.app.f_rent.get(), 2400.0)
+        self.assertEqual(self.app.f_tax.get(), 5245.0)
+        self.assertEqual(self.app.f_other.get(), 1800.0)
+        self.assertTrue(self.app.f_min_irr.is_on())
+        self.assertTrue(self.app.v_niit.get())
+        self.assertEqual(self.app.listing.mls_id, self.app.comparison[0]["form"]["listing"]["mls_id"])
+        self.assertEqual(self.app.result.inputs.expenses.other_fixed_annual, 1800.0)
+        # Same inputs, same model: the row it rebuilds matches the saved one.
+        from report import one_line_summary
+        row = one_line_summary(self.app.result, self.app.thresholds_from_fields(),
+                               self.app.comparison[0]["label"])
+        self.assertEqual(row, self.app.comparison[0]["row"])
+
+    def test_remove_persists(self):
+        self.add_two_deals()
+        self.app.tree.selection_set(self.app.tree.get_children()[0])
+        self.app.remove_selected()
+        self.new_app()
+        self.assertEqual(len(self.app.comparison), 1)
+        self.assertEqual(self.app.f_price.get_text(), "")  # nothing auto-opens
+
+    def test_remove_several_removes_the_right_rows(self):
+        self.add_two_deals()
+        self.app.f_price.var.set("150000")
+        self.app.underwrite()
+        self.app.add_to_comparison()
+        kept = self.app.comparison[1]["row"]
+        items = self.app.tree.get_children()
+        self.app.tree.selection_set((items[0], items[2]))
+        self.app.remove_selected()
+        self.assertEqual([d["row"] for d in self.app.comparison], [kept])
 
 
 @unittest.skipUnless(HAS_TK and HAS_DISPLAY, "needs tkinter and a display")

@@ -37,7 +37,11 @@ assumption, and the report, projection and sensitivity grids update on
 - **An "After tax" tab** reports depreciation, passive losses and the tax due
   at sale. Reported, never mixed into the pre-tax numbers.
 - **Comparison tab** stacks deals as you screen them, one row each, colored
-  by PASS/FAIL. Export it to CSV.
+  by PASS/FAIL. Export it to CSV. The table is saved as you go and reloads
+  the next time the app opens. **Double-click a row** (or *Open selected*)
+  to put every input you entered for that deal back on the form and
+  re-run it. Saved to `saved_comparison.json` beside the program when run
+  from source (git-ignored), or `~/.rental_analyzer/` in the packaged app.
 - **Export** the full report as text or JSON.
 
 Tkinter ships with Python, so there is nothing extra to install on Windows or

@@ -29,15 +29,17 @@ fails on price.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import sys
 import webbrowser
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+import comparison_store
 from enrichment import EnrichmentAssumptions, enrich, estimate_insurance
 from extraction import BS4_AVAILABLE, ListingData, ParserUnavailableError, parse_listing
 from financial_engine import (
@@ -204,7 +206,9 @@ class RentalAnalyzerGUI(ttk.Frame):
         self.listing = ListingData()
         self.result: Optional[UnderwritingResult] = None
         self.enriched = None
-        self.comparison: List[Tuple[str, List[str]]] = []
+        # One dict per row: the row itself plus the form that produced it
+        # (see comparison_store). Saved to disk on every change.
+        self.comparison: List[Dict[str, Any]] = []
         self.after_tax = None
         # Insurance is the one figure still auto-filled; tracking the last
         # auto value lets a listing reload refresh it without stomping on a
@@ -223,6 +227,8 @@ class RentalAnalyzerGUI(ttk.Frame):
         self._build_inputs(left)
         self._build_output(right)
         self._build_statusbar()
+
+        self._load_saved_comparison()
 
         if not BS4_AVAILABLE:
             self.status.set("HTML parsing unavailable (beautifulsoup4 missing from this "
@@ -562,13 +568,16 @@ class RentalAnalyzerGUI(ttk.Frame):
         frame.columnconfigure(0, weight=1)
         self.tree.tag_configure("pass", foreground=OK_COLOR)
         self.tree.tag_configure("fail", foreground=BAD_COLOR)
+        self.tree.bind("<Double-1>", lambda _e: self.open_selected())
 
         buttons = ttk.Frame(frame)
         buttons.grid(row=2, column=0, columnspan=2, sticky="w", pady=4)
+        ttk.Button(buttons, text="Open selected", command=self.open_selected).pack(side="left", padx=4)
         ttk.Button(buttons, text="Remove selected", command=self.remove_selected).pack(side="left", padx=4)
         ttk.Button(buttons, text="Clear all", command=self.clear_comparison).pack(side="left", padx=4)
         ttk.Button(buttons, text="Export table…", command=self.export_comparison).pack(side="left", padx=4)
-        ttk.Label(buttons, text="Underwrite a listing, then 'Add to comparison' to stack them up.",
+        ttk.Label(buttons, text="Underwrite a listing, then 'Add to comparison' to stack them up. "
+                                "Double-click a row to reload everything you entered for it.",
                   foreground="#666").pack(side="left", padx=12)
 
     def _set_text(self, widget: tk.Text, content: str) -> None:
@@ -984,6 +993,65 @@ class RentalAnalyzerGUI(ttk.Frame):
 
     # --- Comparison -----------------------------------------------------
 
+    def _form_fields(self) -> Dict[str, LabeledEntry]:
+        """Every input box on the form, keyed by attribute name (f_price, ...)."""
+        return {name: widget for name, widget in vars(self).items()
+                if isinstance(widget, LabeledEntry)}
+
+    def form_snapshot(self) -> Dict[str, Any]:
+        """The form exactly as typed, so a saved deal reopens as it was entered."""
+        fields = self._form_fields()
+        return {
+            "fields": {name: w.var.get() for name, w in fields.items()},
+            "switches": {name: w.is_on() for name, w in fields.items()
+                         if w.enabled is not None},
+            "niit": bool(self.v_niit.get()),
+            "passive_usable": bool(self.v_passive_usable.get()),
+            "listing": self.listing.to_dict(),
+        }
+
+    def restore_snapshot(self, snapshot: Dict[str, Any]) -> None:
+        fields = self._form_fields()
+        for name, text in snapshot.get("fields", {}).items():
+            if name in fields:
+                fields[name].var.set(text)
+        for name, on in snapshot.get("switches", {}).items():
+            if name in fields:
+                fields[name].set_on(on)
+        self.v_niit.set(bool(snapshot.get("niit", False)))
+        self.v_passive_usable.set(bool(snapshot.get("passive_usable", True)))
+        # Ignore keys this version of ListingData no longer has, so an old
+        # save still opens after a field is renamed or dropped.
+        known = {f.name for f in dataclasses.fields(ListingData)}
+        listing = {k: v for k, v in snapshot.get("listing", {}).items() if k in known}
+        self.listing = ListingData(**listing)
+        self.v_school_district.set(self.listing.school_district or "n/a")
+        # The restored insurance is the user's figure for that deal, not an
+        # estimate a later listing load may overwrite.
+        self._auto_insurance = None
+
+    def _insert_row(self, row: List[str]) -> None:
+        tag = "pass" if row[-1] == "PASS" else "fail"
+        self.tree.insert("", "end", values=row, tags=(tag,))
+
+    def _save_comparison(self) -> None:
+        try:
+            comparison_store.save(self.comparison)
+        except OSError as exc:
+            self.status.set(f"Could not save the comparison table: {exc}")
+
+    def _load_saved_comparison(self) -> None:
+        try:
+            deals = comparison_store.load()
+        except ValueError as exc:
+            self.status.set(str(exc))
+            return
+        for deal in deals:
+            self.comparison.append(deal)
+            self._insert_row(list(deal["row"]))
+        if deals:
+            self.status.set(f"Loaded {len(deals)} saved deal(s) into the comparison tab.")
+
     def add_to_comparison(self) -> None:
         if not self.result:
             self.status.set("Underwrite a deal first, then add it to the comparison.")
@@ -992,22 +1060,53 @@ class RentalAnalyzerGUI(ttk.Frame):
         row = one_line_summary(self.result, self.thresholds_from_fields(), label)
         # IRR in this row is the SCREENED IRR (the lower of the two exits),
         # matching the screening table -- see report.one_line_summary.
-        tag = "pass" if row[-1] == "PASS" else "fail"
-        self.tree.insert("", "end", values=row, tags=(tag,))
-        self.comparison.append((label, row))
+        self._insert_row(row)
+        # The snapshot is taken now, while the form still holds what produced
+        # this row -- not whatever it holds when the row is reopened.
+        self.comparison.append({"label": label, "row": row, "form": self.form_snapshot()})
+        self._save_comparison()
         self.tabs.select(4)
         self.status.set(f"Added {label} to the comparison ({len(self.comparison)} deal(s)).")
 
+    def open_selected(self) -> None:
+        """Put a saved deal's inputs back on the form and underwrite it again."""
+        selection = self.tree.selection()
+        if not selection:
+            self.status.set("Select a row in the comparison table to open it.")
+            return
+        index = self.tree.index(selection[0])
+        if not 0 <= index < len(self.comparison):
+            return
+        deal = self.comparison[index]
+        if not deal.get("form"):
+            self.status.set(f"No saved inputs for {deal.get('label', 'that row')}.")
+            return
+        self.restore_snapshot(deal["form"])
+        self.underwrite()
+        if self.result is not None:
+            self.tabs.select(0)
+            self.status.set(f"Reopened {deal.get('label', 'deal')} with the inputs saved "
+                            "when it was added. Edit and Underwrite to rerun it.")
+
     def remove_selected(self) -> None:
-        for item in self.tree.selection():
-            index = self.tree.index(item)
+        # Highest index first, so earlier pops do not shift later ones.
+        indexed = sorted(((self.tree.index(item), item) for item in self.tree.selection()),
+                         reverse=True)
+        for index, item in indexed:
             self.tree.delete(item)
             if 0 <= index < len(self.comparison):
                 self.comparison.pop(index)
+        if indexed:
+            self._save_comparison()
 
     def clear_comparison(self) -> None:
+        if self.comparison and not messagebox.askyesno(
+                "Clear comparison",
+                f"Remove all {len(self.comparison)} saved deal(s)? This cannot be undone."):
+            return
         self.tree.delete(*self.tree.get_children())
         self.comparison.clear()
+        self._save_comparison()
 
     # --- Export ---------------------------------------------------------
 
@@ -1113,7 +1212,7 @@ class RentalAnalyzerGUI(ttk.Frame):
         with open(path, "w", newline="", encoding="utf-8") as fh:
             writer = csv.writer(fh)
             writer.writerow(BATCH_HEADERS)
-            writer.writerows(row for _label, row in self.comparison)
+            writer.writerows(deal["row"] for deal in self.comparison)
         self.status.set(f"Saved comparison to {path}")
 
     # --- Defaults -------------------------------------------------------
